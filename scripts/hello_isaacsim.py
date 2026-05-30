@@ -4,7 +4,7 @@ from isaacsim import SimulationApp
 app = SimulationApp({"headless": True})
 
 import torch
-from omni.isaac.core import World
+from isaacsim.core.api import World
 
 print(f"[hello] torch={torch.__version__} cuda_available={torch.cuda.is_available()}")
 if torch.cuda.is_available():
