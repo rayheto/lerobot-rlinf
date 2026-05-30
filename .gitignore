@@ -21,3 +21,6 @@ wandb/
 .claude/
 *.swp
 .DS_Store
+
+# IsaacLab editable clone
+third_party/IsaacLab/
