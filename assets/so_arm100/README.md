@@ -41,7 +41,7 @@ The mapping is handled in our action processing layer (`actors/` or `envs/`), no
 
 ## URDF → USD conversion
 
-Use `scripts/import_so101_urdf.py` inside Isaac Sim 4.2 to convert to USD. Output USD is gitignored (regenerate locally).
+Use `scripts/import_so101_urdf.py` inside Isaac Sim 5.1 to convert to USD. Output USD is gitignored (regenerate locally).
 
 ## License
 

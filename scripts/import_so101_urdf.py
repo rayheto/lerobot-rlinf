@@ -1,15 +1,17 @@
 """Import SO-101 URDF into Isaac Sim and save as USD.
 
-Run inside Isaac Sim 4.2 Python environment:
-    ${ISAAC_SIM}/python.sh scripts/import_so101_urdf.py
+Target: Isaac Sim 5.1 (pip install in conda env `rlinf-isaacsim-env`).
+NOTE: 5.1 renamed the URDF importer API — the body below uses the 4.x API
+and will be rewritten against `isaacsim.asset.importer.urdf` once the
+5.1 install is verified.
 """
 from pathlib import Path
 
-from omni.isaac.kit import SimulationApp
+from isaacsim import SimulationApp
 
 app = SimulationApp({"headless": True})
 
-from omni.isaac.urdf import _urdf
+from omni.isaac.urdf import _urdf  # TODO(5.1): migrate to isaacsim.asset.importer.urdf
 from omni.isaac.core.utils.stage import save_stage
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

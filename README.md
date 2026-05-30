@@ -37,7 +37,7 @@ lerobot-rlinf/
 ├── README.md / README.zh.md
 ├── assets/                 # Robot assets
 │   └── so_arm100/          # URDF / USD / meshes
-├── envs/                   # Isaac Sim envs (OmniIsaacGymEnvs-compatible)
+├── envs/                   # Isaac Lab envs (DirectRLEnv / ManagerBasedRLEnv)
 │   └── so101_pick_task.py
 ├── actors/                 # Pi 0.5 actor / critic wrappers
 │   ├── pi05_actor.py
@@ -54,12 +54,12 @@ lerobot-rlinf/
 
 | Component | Version | Notes |
 |------|------|------|
-| Isaac Sim | 4.2.0 | Seeed Wiki verified |
-| OmniIsaacGymEnvs | Isaac Sim 4.2 branch | Vectorized env base |
+| Isaac Sim | 5.1.0 | pip install, Python 3.11 |
+| Isaac Lab | 2.x (paired with Isaac Sim 5.1) | Vectorized env base (replaces deprecated OmniIsaacGymEnvs) |
 | LeRobot | main | Source of Pi 0.5 |
 | RLinf | main | Training loop framework |
 | PEFT | ≥ 0.10.0 | LoRA |
-| PyTorch | ≥ 2.3.0 | bf16 autocast |
+| PyTorch | bundled with Isaac Sim 5.1 | bf16 autocast |
 
 ---
 
