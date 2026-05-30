@@ -79,6 +79,37 @@ here so we don't pay the cost twice.
   to accept (note: `DISPLAY=:110 echo Yes | python` is wrong — env var binds
   to echo. Use `echo Yes | DISPLAY=:110 python ...`).
 
+## LeRobot Pi 0.5 interface contract
+
+Pulled from `huggingface/lerobot` main and the `lerobot/pi05_base` HF model
+card on 2026-05-30. Capturing here so the next person doesn't re-derive
+this when wiring W2.
+
+- **Obs key constants** (`src/lerobot/utils/constants.py`):
+  `OBS_STATE = "observation.state"`, `OBS_IMAGES = "observation.images"`
+  (prefix; full key is `observation.images.<camera_name>`),
+  `ACTION = "action"`.
+- **Camera names are dataset-defined, not policy-pinned.** `pi05_base`
+  ships with `observation.images.{base_0_rgb, left_wrist_0_rgb,
+  right_wrist_0_rgb}` as example keys; an SO-101 finetune sets its own
+  (typically `front` + `wrist`). Whatever the finetune dataset uses is
+  what the policy expects.
+- **Image format** (`modeling_pi0.py`): accepts `[B,C,H,W]` OR `[B,H,W,C]`
+  — no need to permute. Values must be float in `[0,1]`. Policy resizes
+  to `(224, 224)` internally and renormalizes to `[-1,1]` for SigLIP.
+- **Action output**: chunk `[B, chunk_size=50, max_action_dim=32]` (padded
+  to 32; real action_dim from finetune = 6 for SO-101). Pi 0.5 uses
+  `NormalizationMode.MEAN_STD` for both STATE and ACTION; `select_action()`
+  unnormalizes outputs back to **dataset units** before returning.
+- **Action units are NOT radians.** They are whatever the SO-101 dataset
+  captures, which for LeRobot Feetech-calibrated teleop is normalized
+  degree-like motor values. Conversion to env-side joint targets must
+  read the dataset's action stats — don't assume radians.
+
+**Implication for the env**: do not pre-bake any of this into env cfg.
+Bridging (key rename, dtype/scale, dataset→env action units) belongs in
+a runtime wrapper, written when the concrete finetune is in hand.
+
 ## Simulation Settings panel (Isaac Sim UI)
 
 For reference — what the docked panel in the viewport actually controls:

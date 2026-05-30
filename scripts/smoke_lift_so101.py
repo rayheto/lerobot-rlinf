@@ -41,24 +41,33 @@ print(f"[SMOKE] action_space={env.action_space}")
 print(f"[SMOKE] observation_space={env.observation_space}")
 
 obs, _ = env.reset()
-policy_obs = obs["policy"] if isinstance(obs, dict) else obs
-print(f"[SMOKE] reset OK, policy obs shape={policy_obs.shape}")
+state = obs["policy"] if isinstance(obs, dict) else obs
+print(f"[SMOKE] reset OK, observation.state shape={tuple(state.shape)} (expect [B, 6] Feetech-norm)")
+print(f"[SMOKE] state row 0 = {state[0].tolist()}")
 
 if isinstance(obs, dict) and "images" in obs:
-    images = obs["images"]
-    for name, tensor in images.items():
+    for name, tensor in obs["images"].items():
         print(
             f"[SMOKE] image '{name}' shape={tuple(tensor.shape)} dtype={tensor.dtype} "
             f"min={int(tensor.min())} max={int(tensor.max())}"
         )
 
+# Action is [B, 6] in Feetech-normalized [-100, 100], URDF joint order:
+# [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper].
+# Zero action = 0% on every joint → arm at home pose, gripper at calibration center.
 action_dim = env.action_space.shape[1] if len(env.action_space.shape) > 1 else env.action_space.shape[0]
+assert action_dim == 6, f"expected action_dim=6 (SO-101), got {action_dim}"
+
+home_action = torch.zeros((args.num_envs, action_dim), device=device)
 with torch.inference_mode():
     for i in range(args.steps):
-        action = torch.zeros((args.num_envs, action_dim), device=device)
-        obs, rew, term, trunc, info = env.step(action)
+        obs, rew, term, trunc, info = env.step(home_action)
         if i % 5 == 0:
             print(f"[SMOKE] step {i:3d}  rew_mean={rew.float().mean().item():+.4f}  term={int(term.sum())}  trunc={int(trunc.sum())}")
+
+# State should be near 0% on every joint after holding home for `steps` steps.
+final_state = obs["policy"]
+print(f"[SMOKE] final state row 0 = {final_state[0].tolist()}  (expect all near 0 in Feetech-norm)")
 
 print("[SMOKE] OK")
 
@@ -67,7 +76,8 @@ if args.gui:
     try:
         with torch.inference_mode():
             while simulation_app.is_running():
-                action = (torch.rand((args.num_envs, action_dim), device=device) - 0.5) * 0.2
+                # Small random walk in Feetech-norm units: ±5% per joint per step.
+                action = (torch.rand((args.num_envs, action_dim), device=device) - 0.5) * 10.0
                 env.step(action)
     except KeyboardInterrupt:
         pass

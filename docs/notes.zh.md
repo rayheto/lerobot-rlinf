@@ -71,6 +71,34 @@
   （注意：`DISPLAY=:110 echo Yes | python` 是错的，环境变量绑到 echo 上了，
   要写成 `echo Yes | DISPLAY=:110 python ...`）。
 
+## LeRobot Pi 0.5 接口约定
+
+2026-05-30 从 `huggingface/lerobot` main 分支和 `lerobot/pi05_base` 模型卡
+拉的事实，记一下省得 W2 接的时候再查一遍。
+
+- **Obs key 常量**（`src/lerobot/utils/constants.py`）：
+  `OBS_STATE = "observation.state"`，`OBS_IMAGES = "observation.images"`
+  （前缀，完整 key 是 `observation.images.<camera_name>`），
+  `ACTION = "action"`。
+- **相机名是数据集决定的，不是 policy 钉死的**。`pi05_base` 里挂的
+  `observation.images.{base_0_rgb, left_wrist_0_rgb, right_wrist_0_rgb}`
+  只是例子；SO-101 finetune 用自己的（通常 `front` + `wrist`）。
+  finetune 数据集用啥 key，policy 就吃啥 key。
+- **图像格式**（`modeling_pi0.py`）：`[B,C,H,W]` 和 `[B,H,W,C]` 都接，
+  不用我们手动 permute。数值要 float 范围 `[0,1]`。
+  policy 内部 resize 到 `(224, 224)`，再归一化到 `[-1,1]` 喂 SigLIP。
+- **Action 输出**：chunk `[B, chunk_size=50, max_action_dim=32]`
+  （pad 到 32，真实 action_dim 由 finetune 决定，SO-101 = 6）。
+  Pi 0.5 用 `NormalizationMode.MEAN_STD` 归一化 STATE 和 ACTION；
+  `select_action()` 出来之前会反归一化回**数据集单位**。
+- **Action 单位不是弧度**。是 SO-101 数据集采的单位，
+  对 LeRobot Feetech 校准过的遥操数据集来说是归一化的角度类电机值。
+  转成 env 关节目标必须读数据集的 action stats，**不要假设是弧度**。
+
+**对 env 的含义**：以上这些都不要 hardcode 进 env cfg。
+key rename、dtype/scale、数据集 → env action 单位换算这些事
+全部放到 runtime wrapper 里写，等拿到具体的 finetune 再动手。
+
 ## Simulation Settings 面板（Isaac Sim UI）
 
 视口里那个面板的开关到底干嘛的：

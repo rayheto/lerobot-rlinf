@@ -12,6 +12,41 @@ from isaaclab.assets.articulation import ArticulationCfg
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 SO101_USD_PATH = str(_REPO_ROOT / "assets/so_arm100/SO101/so101_new_calib.usd")
 
+# Canonical URDF joint order. Used by both observation.state and action vectors so
+# they match the convention LeRobot SO-101 teleop datasets capture.
+SO101_JOINT_NAMES = [
+    "shoulder_pan",
+    "shoulder_lift",
+    "elbow_flex",
+    "wrist_flex",
+    "wrist_roll",
+    "gripper",
+]
+
+# Per-joint Feetech ↔ URDF-radian calibration. LeRobot real-robot teleop captures
+# action/state as normalized [-100, 100]% of each Feetech motor's calibrated
+# extremes. To mimic that interface in sim, we map norm ↔ rad via:
+#     rad = scale * norm + offset
+#     norm = (rad - offset) / scale
+# Values derived from URDF joint limits: scale = (upper-lower)/200,
+# offset = (upper+lower)/2.
+SO101_FEETECH_SCALE = {
+    "shoulder_pan": 0.01920,    # ±1.920 rad
+    "shoulder_lift": 0.01745,   # ±1.745 rad
+    "elbow_flex": 0.01690,      # ±1.690 rad
+    "wrist_flex": 0.01658,      # ±1.658 rad
+    "wrist_roll": 0.027925,     # [-2.744, +2.841] rad — asymmetric
+    "gripper": 0.00960,         # [-0.175, +1.745] rad — asymmetric
+}
+SO101_FEETECH_OFFSET = {
+    "shoulder_pan": 0.0,
+    "shoulder_lift": 0.0,
+    "elbow_flex": 0.0,
+    "wrist_flex": 0.0,
+    "wrist_roll": 0.0485,
+    "gripper": 0.785,
+}
+
 
 SO101_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
