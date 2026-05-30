@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+
+# Isaac Sim generated USD (regenerate locally via scripts/import_so101_urdf.py)
+assets/so_arm100/**/*.usd
+assets/so_arm100/**/*.usda
+
+# Training artifacts
+outputs/
+checkpoints/
+wandb/
+*.ckpt
+*.pt
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
