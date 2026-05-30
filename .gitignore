@@ -15,8 +15,9 @@ wandb/
 *.ckpt
 *.pt
 
-# Editor
+# Editor / agent state
 .vscode/
 .idea/
+.claude/
 *.swp
 .DS_Store
