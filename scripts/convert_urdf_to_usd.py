@@ -1,7 +1,7 @@
-"""Import SO-101 URDF into Isaac Sim 5.1 and save as USD.
+"""Convert SO-101 URDF to USD via Isaac Sim 5.1 URDF importer.
 
 Run:
-    /home/hlei/miniconda3/envs/rlinf-isaacsim-env/bin/python scripts/import_so101_urdf.py
+    /home/hlei/miniconda3/envs/rlinf-isaacsim-env/bin/python scripts/convert_urdf_to_usd.py
 """
 from pathlib import Path
 

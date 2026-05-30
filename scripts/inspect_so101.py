@@ -1,9 +1,9 @@
-"""Load SO-101 USD as an Articulation, step physics, sweep joints to verify limits.
+"""Inspect SO-101 USD: load as Articulation, sweep joints, optional viewport preview.
 
-Run (headless):
-    /home/hlei/miniconda3/envs/rlinf-isaacsim-env/bin/python scripts/verify_so101_articulation.py
-Run (GUI, on display :110):
-    DISPLAY=:110 /home/hlei/miniconda3/envs/rlinf-isaacsim-env/bin/python scripts/verify_so101_articulation.py --gui
+Run (headless sanity):
+    /home/hlei/miniconda3/envs/rlinf-isaacsim-env/bin/python scripts/inspect_so101.py
+Run (GUI preview on display :110):
+    DISPLAY=:110 /home/hlei/miniconda3/envs/rlinf-isaacsim-env/bin/python scripts/inspect_so101.py --gui
 """
 import argparse
 import sys
