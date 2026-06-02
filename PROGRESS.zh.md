@@ -23,7 +23,7 @@
 | **Phase 1.5 — lerobot → openpi ckpt remap** | 不在原 plan | ✅ 已完成（保留为通用工具，未来 lift_cube SFT 复用） |
 | **Phase 2 — `only_eval: True` 验证** | 用 SFT ckpt 跑 100 episodes，要求 ≥30% 成功率 | ❌ **不可达成**：cross-domain gap 三层 mismatch；pivot 见下 |
 | **Pivot 2026-06-02** — 接入 LightwheelAI/leisaac 作为 env 层 | 不在原 plan | ✅ submodule 接入完成，smoke 通过；旧手搓 env 全删 |
-| **Phase 2-bis — 在 leisaac lift_cube 数据集上重 SFT** | 替代 sponge 任务 | 🟡 未开始 |
+| **Phase 2-bis — 在 leisaac pick_orange 数据集上重 SFT** | 替代 sponge 任务（target pivot 2026-06-02：lift_cube → pick_orange） | 🟡 未开始 |
 | **Phase 3 — PPO/GRPO 后训练** | RL 后训练，目标 ≥80% | 🟡 未开始（待 R1 ViewBackward0 + Ray plumbing） |
 | **Phase 5 — Sim2real** | 显式 deferred | 🟡 不在当前迭代 |
 
@@ -206,6 +206,16 @@ log_prob 怎么算。如果是 ELBO 近似，留意 variance 大不大。
 
 ## 六、变更历史
 
+- **2026-06-02（晚）**：目标任务从 `LeIsaac-SO101-LiftCube-v0` 切换到
+  `LeIsaac-SO101-PickOrange-v0`。原因：(1) pick_orange 在 HF 有公开数据集
+  `LightwheelAI/leisaac-pick-orange`，可直接做 in-domain SFT；lift_cube
+  没有配套数据集。(2) pick_orange 自带 front+wrist **双相机** obs，
+  天然匹配 Pi 0.5 的 2-image 输入接口；lift_cube 只有 front cam。
+  (3) leisaac upstream 还提供 pick_orange 的微调 reference policy 可对照。
+  smoke 已通：`DISPLAY=:110 ... --env-id LeIsaac-SO101-PickOrange-v0 --gui`，
+  kitchen 场景 + 3 oranges + plate 正常渲染（PhysX warning 都是装饰
+  prim 上的 upstream noise，非阻塞）。下一步：写 `eval_pi05_pickorange.py`
+  + 跑跨任务零样本 baseline + 启动 lerobot SFT on pick_orange dataset。
 - **2026-06-02**：Phase 2 standalone eval 跑通链路，但 SR=0/N。**根因不是
   plumbing 也不是 norm_stats，是 cross-domain gap 三层 mismatch**：
   视觉（dataset 真实房间 vs sim CuboidCfg 海绵 + serving_bowl USD）+ 动力学
