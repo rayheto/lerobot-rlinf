@@ -1,1 +1,2 @@
-from .so101 import SO101_CFG  # noqa: F401
+"""Asset namespace — robot/scene USDs now live under
+`third_party/leisaac/assets/` (see `LEISAAC_ASSETS_ROOT`)."""
