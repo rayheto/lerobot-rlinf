@@ -4,56 +4,67 @@
 环境的分工。具体阶段进度看 [PROGRESS.zh.md](PROGRESS.zh.md)，调试踩坑
 看 [docs/notes.zh.md](docs/notes.zh.md)，TODO 看 [docs/todo.md](docs/todo.md)。
 
-最后更新：2026-06-01
+最后更新：2026-06-02
 
 ---
 
 ## 一、项目角色与边界
 
-本仓库（`lerobot-rlinf`）只做一件事：**为 SO-101 机械臂的 Pi 0.5 RL
-后训练，提供 Isaac Lab 端的 env 资产、env 配置、与上下游 sanity
-脚本**。它**不实现训练循环**，训练完全交给 RLinf。
+本仓库（`lerobot-rlinf`）只做一件事：**给 SO-101 机械臂的 Pi 0.5 RL
+后训练做 glue 层** —— 把第三方的 Isaac Lab env（LightwheelAI/leisaac）、
+LeRobot SFT 产物、RLinf 训练框架串起来。它**不实现 env、也不实现训练
+循环**：env 来自 leisaac，训练交给 RLinf。
 
-整条管线的代码物理分布在三个仓库：
+> **历史**：2026-06-02 之前，本仓库还自己实现了 SO-101 sponge-bowl env
+> （手搓 USD + CameraCfg + reward shaping）。Phase 2 eval 暴露 cross-domain
+> gap（视觉/动力学/sim 域 0 数据三层 mismatch）后，env 层全部迁移到
+> [LightwheelAI/leisaac](https://github.com/LightwheelAI/leisaac)（自带
+> 配套 LeRobot 数据集和视觉对齐的 sim env）。详见 PROGRESS.zh.md 六、变更历史。
+
+整条管线的代码物理分布在四个仓库（leisaac 是 2026-06-02 之后新增的）：
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│  lerobot-rlinf（本仓库）                                              │
+│  lerobot-rlinf（本仓库，glue only）                                   │
 │  ─────────────────────────                                           │
-│  - SO-101 URDF/USD 资产                                              │
-│  - Isaac Lab gym 环境注册（Isaac-Lift-Cube-SO101-v0 等）              │
-│  - SFT 启动脚本（调 lerobot-train CLI）                               │
-│  - dataset replay / env smoke 等 sanity 脚本                          │
-└──────┬───────────────────────────────────────────┬──────────────────┘
-       │ import lerobot_rlinf                       │ bash scripts/…
-       │ （触发 gym registration）                    │
-       ▼                                             ▼
-┌────────────────────────┐               ┌────────────────────────────┐
-│ RLinf（/home/hlei/RLinf）│              │  lerobot（pypi 包 0.4.4）   │
-│ ────────────────────    │              │  ────────────────────       │
-│ - SFT/PPO worker         │              │  - lerobot-train CLI       │
-│ - openpi 模型加载         │              │  - LeRobotDataset 加载      │
-│ - FSDP 包装               │              │  - Pi 0.5 模型类（dry-run  │
-│ - env 接入（rlinf/envs/   │              │    SFT 路径用，不用于 RL） │
-│   isaaclab/tasks/         │              └────────────────────────────┘
-│   so101_lift.py）         │
-└────────────────────────┘
-         │
-         ▼ import isaaclab.envs:ManagerBasedRLEnv
-┌────────────────────────────────────────────────────────────────────┐
-│  Isaac Lab（third_party/IsaacLab，editable 装到 rlinf-isaacsim-env） │
+│  - ckpt remap 工具（lerobot → openpi）                                │
+│  - SFT 启动脚本（调 lerobot-train CLI）                                │
+│  - standalone eval driver（绕过 Ray 验证链路）                          │
+│  - env / dataset / 训练全部不在本仓库实现                              │
+└────┬───────────────────┬───────────────────────┬────────────────────┘
+     │ import leisaac    │ bash scripts/…        │ python scripts/…
+     │ （触发 gym 注册） │                       │
+     ▼                   ▼                       ▼
+┌──────────────────────┐ ┌─────────────────┐ ┌──────────────────────┐
+│ leisaac              │ │ lerobot 0.4.4   │ │ RLinf                │
+│ (third_party/        │ │ (pypi)          │ │ (/home/hlei/RLinf)   │
+│  leisaac, submodule) │ │ ─────────────   │ │ ─────────────        │
+│ ─────────────────    │ │ - LeRobot       │ │ - SFT/PPO worker     │
+│ - SO-101 ArtCfg      │ │   dataset/CLI   │ │ - openpi 模型加载      │
+│ - lift_cube /        │ │ - Pi 0.5 模型    │ │ - FSDP 包装           │
+│   pick_orange /      │ └─────────────────┘ │ - env wrapper        │
+│   cleanup_trash 等   │                     │   (so101_lift.py)    │
+│ - LeRobot recorder   │                     └──────────┬───────────┘
+│ - 配套真机数据集（HF）│                                │
+└──────────┬───────────┘                                │
+           │ import isaaclab.envs:ManagerBasedRLEnv     │
+           ▼                                            │
+┌─────────────────────────────────────────────────────────────────────┐
+│  IsaacLab 2.3.0（leisaac 嵌套的 submodule）                           │
+│  third_party/leisaac/dependencies/IsaacLab/                          │
 │  ─────────────────────────────────────                              │
-│  - ManagerBasedRLEnv 框架                                           │
+│  - ManagerBasedRLEnv 框架                                            │
 │  - Isaac Sim 5.1 + PhysX 仿真后端                                    │
-│  - URDF importer / USD asset 加载                                    │
-└────────────────────────────────────────────────────────────────────┘
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 设计原则：
-- **本仓库不写训练代码**。SFT 调 lerobot CLI（dry-run）；RL 训练在 RLinf 那边。
-- **本仓库注册的 gym env 通过 `import lerobot_rlinf` 副作用注册**。
-  RLinf 端只需要在 SFT/PPO worker 启动前 import 一次，就能用
-  `gym.make("Isaac-Lift-Sponge-Bowl-SO101-v0")`。
+- **本仓库不写 env、不写训练代码**。env 来自 leisaac（Apache-2.0 vendored
+  submodule）；SFT 调 lerobot CLI；RL 训练在 RLinf。
+- **gym env 注册通过 `import leisaac` 副作用触发**。RLinf / eval driver
+  只需在启动前 `import leisaac`，就能 `gym.make("LeIsaac-SO101-LiftCube-v0")`。
+- **leisaac 资产路径用 `LEISAAC_ASSETS_ROOT` 环境变量定位**到
+  `third_party/leisaac/assets/`（缺省 `git rev-parse` 会指错位置）。
 - **跨仓库写依赖通过 conda env 的 `pip install -e .` 落地**，不靠
   PYTHONPATH 黑魔法。
 
@@ -63,50 +74,39 @@
 
 ```
 lerobot-rlinf/
-├── pyproject.toml              # name=lerobot-rlinf, version=0.0.1
-├── PROGRESS.zh.md              # 阶段进度 + 风险登记（W2-W4 路线图）
+├── pyproject.toml              # name=lerobot-rlinf, version=0.0.2（glue only）
+├── PROGRESS.zh.md              # 阶段进度 + 风险登记
 ├── ARCHITECTURE.zh.md          # 本文件
 ├── README.md / README.zh.md    # 安装 & quickstart
+├── .gitmodules                 # third_party/leisaac
 │
-├── src/lerobot_rlinf/
-│   ├── __init__.py             # 顶层包，import 副作用触发任务注册
-│   ├── assets/
-│   │   └── so101.py            # SO101_CFG（ArticulationCfg）
-│   │                           #   - 关节顺序、限位、PD 增益、初始姿态
-│   └── tasks/
-│       ├── __init__.py         # from . import lift  → 注册任务
-│       └── lift/
-│           ├── __init__.py     # from .config import so101 → 注册 gym
-│           ├── lift_env_cfg.py # ManagerBasedRLEnvCfg 基类
-│           ├── config/so101/
-│           │   ├── __init__.py        # gym.register × 4
-│           │   │                      #   Isaac-Lift-Cube-SO101-v0
-│           │   │                      #   Isaac-Lift-Cube-SO101-Play-v0
-│           │   │                      #   Isaac-Lift-Sponge-Bowl-SO101-v0
-│           │   │                      #   Isaac-Lift-Sponge-Bowl-SO101-Play-v0
-│           │   ├── joint_pos_env_cfg.py  # Cube 任务（随机目标，RL 用）
-│           │   └── sponge_bowl_cfg.py    # Sponge-bowl 任务（对齐数据集）
-│           └── mdp/                   # 任务级 manager 组件
-│               ├── observations.py    # obs 拼装（双相机 + state）
-│               ├── rewards.py
-│               └── terminations.py
+├── src/lerobot_rlinf/          # 缩水成空命名空间（env 层迁去 leisaac）
+│   ├── __init__.py
+│   ├── assets/__init__.py      # 占位说明
+│   └── tasks/__init__.py       # 占位说明
 │
 ├── scripts/
-│   ├── convert_urdf_to_usd.py        # SO-101 URDF → USD（Isaac Sim 5.1）
-│   ├── inspect_so101.py              # USD/joint 验证（zero-pose / PD）
-│   ├── smoke_lift_so101.py           # env smoke：reset+step 不崩
-│   ├── replay_dataset_actions.py     # Phase 0 sanity：dataset action 单位
-│   ├── sft_pi05_sponge.sh            # lerobot-train CLI 主入口
-│   ├── sft_smoke.sh                  # 上面的 2-step 缩水版
-│   ├── sft_run_with_tb.sh            # sft + tensorboard 串起来
-│   └── _sft_tb_tail.py               # tb event 监控（内部用）
-│
-├── assets/
-│   └── so_arm100/                    # SO-101 URDF 源文件 + 转换出的 USD
+│   ├── smoke_lift_cube_leisaac.py   # leisaac env smoke
+│   ├── eval_pi05_liftcube.py        # standalone eval（绕过 Ray，跑新 env）
+│   ├── audit_ckpt_keys.py           # Phase 1.5：lerobot ↔ openpi key 对齐
+│   ├── convert_lerobot_to_openpi.py # Phase 1.5：ckpt remap
+│   ├── extract_norm_stats.py        # Phase 1.5：norm_stats 真值替换 dummy
+│   ├── convert_urdf_to_usd.py       # 通用工具
+│   ├── inspect_so101.py             # USD/joint 验证（保留）
+│   ├── sft_pi05_sponge.sh           # lerobot-train CLI（sponge baseline，历史）
+│   ├── sft_smoke.sh                 # 2-step smoke
+│   ├── sft_run_with_tb.sh           # sft + tensorboard
+│   └── _sft_tb_tail.py              # tb 监控
 │
 ├── third_party/
-│   └── IsaacLab/                     # editable 装在 rlinf-isaacsim-env
-│                                     # （.gitignore 不入仓）
+│   └── leisaac/                # git submodule, recursive
+│       ├── source/leisaac/     # pip install -e（含 LeIsaac-SO101-* gym IDs）
+│       ├── assets/             # USD 资产（人工下载）
+│       │   ├── robots/so101_follower.usd     # 23 MB，HF leisaac_env
+│       │   └── scenes/table_with_cube/       # 5 MB，GitHub release v0.1.2
+│       │       ├── scene.usd
+│       │       ├── cube/  textures/
+│       └── dependencies/IsaacLab/  # 嵌套 submodule，IsaacLab 2.3.0
 │
 ├── outputs/                          # 训练产物（.gitignore）
 │   ├── sft_pi05_sponge/
@@ -175,15 +175,22 @@ shebang / `LEROBOT_BIN` 之类的硬编码路径。
 - **Python**：3.11.15
 - **装了什么**：
   - `isaacsim==5.1.0.0` + 全套 `isaacsim-*` 扩展
-  - `isaaclab` + `isaaclab_tasks` + ... 共 5 个 editable package
-    （指向 `third_party/IsaacLab/source/`）
-  - `lerobot-rlinf`（本仓库 editable）—— 触发 SO-101 任务注册
+  - `isaaclab` + `isaaclab_tasks` + ... 共 5 个 editable package，
+    **指向 `third_party/leisaac/dependencies/IsaacLab/source/`**
+    （2026-06-02 之前指向 `third_party/IsaacLab/`，已删；版本 2.3.0，
+    从 0.54.3 downgrade，因为 leisaac 强 pin 此版本）
+  - `leisaac`（editable，`third_party/leisaac/source/leisaac/`）——
+    触发 `LeIsaac-SO101-*` 任务注册
+  - `lerobot-rlinf`（本仓库 editable）—— 现仅提供命名空间
   - 仅做 env 侧依赖，**不装 lerobot / openpi**
 - **什么时候用**：
-  - `scripts/inspect_so101.py`、`scripts/smoke_lift_so101.py`
-  - `scripts/replay_dataset_actions.py`（Phase 0）
+  - `scripts/smoke_lift_cube_leisaac.py`、`scripts/eval_pi05_liftcube.py`
+  - `scripts/inspect_so101.py`
   - RLinf 端调 Isaac Lab env 时由 RLinf 自动激活（component_placement
     机制；TODO：核对 RLinf 是否真的切到这个 env，还是装在自己的 .venv 里）
+- **leisaac 资产位置**：脚本 import leisaac 前必须 `os.environ["LEISAAC_ASSETS_ROOT"] = ".../third_party/leisaac/assets"`，
+  否则 leisaac 用 `git rev-parse --show-toplevel` 把 ASSETS_ROOT 解析到
+  本仓库根目录的 `assets/`（已删），加载 USD 时报 `Failed to open layer`。
 - **不要装的东西**：`lerobot`、`accelerate`、任何拖 numpy>=2 进来的包。
   `isaacsim-kernel==5.1.0.0` 锁 `numpy==1.26.0`，违反会导致几百个
   `isaacsim.*` 扩展加载失败（详见 `docs/notes.zh.md`）。

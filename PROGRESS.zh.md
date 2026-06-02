@@ -6,7 +6,7 @@
 >
 > 调试细节请翻 `docs/notes.zh.md`，TODO 翻 `docs/todo.md`。
 
-最后更新：2026-06-01
+最后更新：2026-06-02
 
 ---
 
@@ -20,8 +20,11 @@
 | **Phase 1' — lerobot SFT**（dry-run 路径） | 原计划只是验证数据健康度后丢弃 | ✅ **跑到 step 10000**，7.0G ckpt 落盘 `outputs/sft_pi05_sponge/checkpoints/010000/` |
 | **决策转向**：跳过 RLinf SFT、走 lerobot ckpt → openpi remap | 不在原 plan | ✅ 2026-06-01 确认 |
 | **Phase 1.5 — lerobot → openpi 加载链路** | 不在原 plan，决策转向后新增 | 🟡 **未开始**（下一步） |
-| **Phase 2 — `only_eval: True` 验证** | 用 SFT ckpt 跑 100 episodes，要求 ≥30% 成功率 | 🟡 未开始 |
-| **Phase 3 — PPO/GRPO 后训练** | RL 后训练，目标 ≥80% | 🟡 未开始 |
+| **Phase 1.5 — lerobot → openpi ckpt remap** | 不在原 plan | ✅ 已完成（保留为通用工具，未来 lift_cube SFT 复用） |
+| **Phase 2 — `only_eval: True` 验证** | 用 SFT ckpt 跑 100 episodes，要求 ≥30% 成功率 | ❌ **不可达成**：cross-domain gap 三层 mismatch；pivot 见下 |
+| **Pivot 2026-06-02** — 接入 LightwheelAI/leisaac 作为 env 层 | 不在原 plan | ✅ submodule 接入完成，smoke 通过；旧手搓 env 全删 |
+| **Phase 2-bis — 在 leisaac lift_cube 数据集上重 SFT** | 替代 sponge 任务 | 🟡 未开始 |
+| **Phase 3 — PPO/GRPO 后训练** | RL 后训练，目标 ≥80% | 🟡 未开始（待 R1 ViewBackward0 + Ray plumbing） |
 | **Phase 5 — Sim2real** | 显式 deferred | 🟡 不在当前迭代 |
 
 ---
@@ -203,6 +206,19 @@ log_prob 怎么算。如果是 ELBO 近似，留意 variance 大不大。
 
 ## 六、变更历史
 
+- **2026-06-02**：Phase 2 standalone eval 跑通链路，但 SR=0/N。**根因不是
+  plumbing 也不是 norm_stats，是 cross-domain gap 三层 mismatch**：
+  视觉（dataset 真实房间 vs sim CuboidCfg 海绵 + serving_bowl USD）+ 动力学
+  （URDF 限位 ±100° vs dataset shoulder_lift mean=-103°）+ Train 域 0 sim
+  数据。完整复盘见 `~/MemoryPalace/robotics/lerobot/phase2_eval_domain_gap.md`。
+  **Pivot：放弃手搓 sponge-bowl env，接入 [LightwheelAI/leisaac](https://github.com/LightwheelAI/leisaac)**
+  作为 git submodule（`third_party/leisaac/`），任务目标改为 leisaac 的
+  `LeIsaac-SO101-LiftCube-v0`（自带配套 LeRobot dataset + 视觉对齐的 sim
+  env）。旧 env 层（`src/lerobot_rlinf/tasks/lift/`、`assets/so101.py`、
+  `assets/so_arm100/`、`third_party/IsaacLab/`、`scripts/cam_sweep.py` 等）
+  全删；保留 Phase 1.5 ckpt remap 工具（任务无关，未来 lift_cube SFT 后复用）。
+  IsaacLab 改用 leisaac 嵌套的 fork（2.3.0，downgrade from 0.54.3）。
+  `scripts/smoke_lift_cube_leisaac.py` 跑通，obs/action 接口已确认。
 - **2026-06-01**（晚）：跑 Phase 0 dataset replay，确认 action 单位
   对齐（stable mean err 5.69°，量级正确）。脚本阈值 FAIL 但根因是
   env 桌面高度截断 + wrist_flex PD 稳态偏置，与单位无关。**R2 风险

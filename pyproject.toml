@@ -4,9 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lerobot-rlinf"
-version = "0.0.1"
-description = "SO-101 + Pi 0.5 post-training on Isaac Lab + RLinf"
+version = "0.0.2"
+description = "SO-101 + Pi 0.5 post-training glue on top of LightwheelAI/leisaac"
 requires-python = ">=3.10"
+
+# The leisaac env layer is intentionally NOT a `dependencies` entry — it's
+# vendored as a git submodule under third_party/leisaac and must be
+# installed editable from there so its bundled IsaacLab fork is used:
+#   pip install -e ./third_party/leisaac/source/leisaac --no-deps
+#   pip install -e .
 
 [tool.setuptools.packages.find]
 where = ["src"]
