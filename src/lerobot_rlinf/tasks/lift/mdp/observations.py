@@ -17,26 +17,23 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 
-def joint_pos_feetech(
+def joint_pos_deg(
     env: ManagerBasedRLEnv,
     asset_name: str,
     joint_names: list[str],
-    scale: dict[str, float],
-    offset: dict[str, float],
 ) -> torch.Tensor:
-    """Joint positions in Feetech-normalized [-100, 100] units.
+    """Joint positions in degrees — LeRobot v3.0 SO-101 dataset convention.
 
     Output order = `joint_names` (canonical URDF order), independent of
-    articulation's internal joint ordering. Matches the convention LeRobot
-    SO-101 teleop datasets capture (`observation.state`).
+    articulation's internal joint ordering. Matches `observation.state`
+    captured by lerobot teleop.
     """
+    import math
     asset: Articulation = env.scene[asset_name]
     name_to_id = {n: i for i, n in enumerate(asset.joint_names)}
     ids = [name_to_id[n] for n in joint_names]
-    pos = asset.data.joint_pos[:, ids]
-    scale_t = torch.as_tensor([scale[n] for n in joint_names], device=pos.device, dtype=pos.dtype)
-    offset_t = torch.as_tensor([offset[n] for n in joint_names], device=pos.device, dtype=pos.dtype)
-    return (pos - offset_t) / scale_t
+    pos_rad = asset.data.joint_pos[:, ids]
+    return pos_rad * (180.0 / math.pi)
 
 
 def object_position_in_robot_root_frame(

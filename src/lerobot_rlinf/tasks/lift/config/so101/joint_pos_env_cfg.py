@@ -1,11 +1,14 @@
 """SO-101 cube-lift env config — LeRobot Pi 0.5 compatible obs/action.
 
-Conventions (match real SO-101 teleop datasets captured by lerobot):
-- `observation.state`: [B, 6] Feetech-normalized joint positions in [-100, 100],
-  URDF joint order (`SO101_JOINT_NAMES`).
+Conventions (match LeRobot v3.0 SO-101 teleop datasets, verified against
+aswinkumar99/LeRobot-SO101-task1-* stats):
+- `observation.state`: [B, 6] joint positions in **degrees**, URDF joint
+  order (`SO101_JOINT_NAMES`), 0° anchored at URDF mechanical zero.
 - `observation.images.{front, wrist}`: [B, H, W, 3] uint8 RGB at 224×224.
-- action: [B, 6] Feetech-normalized [-100, 100], same URDF joint order. Mapped
-  to radians per-joint by IsaacLab's JointPositionActionCfg.
+  (Note: real datasets use `overhead`/`wrist`; we'll alias `front→overhead`
+  in the LeRobot wrapper when feeding the policy.)
+- action: [B, 6] degrees, same URDF joint order. Mapped to radians by
+  IsaacLab's JointPositionActionCfg (uniform scale = π/180, offset = 0).
 
 IsaacLab group naming (`policy` / `images`) is preserved; renaming to LeRobot's
 `observation.state` / `observation.images.*` happens at the wrapper layer.
@@ -25,8 +28,7 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
 from lerobot_rlinf.assets.so101 import (
     SO101_CFG,
-    SO101_FEETECH_OFFSET,
-    SO101_FEETECH_SCALE,
+    SO101_DEG_TO_RAD,
     SO101_JOINT_NAMES,
 )
 from lerobot_rlinf.tasks.lift import mdp
@@ -45,15 +47,13 @@ _GRIPPER_JOINTS = SO101_JOINT_NAMES[5:]  # gripper
 
 @configclass
 class StateCfg(ObsGroup):
-    """observation.state — 6-DoF Feetech-normalized joint pos, URDF order."""
+    """observation.state — 6-DoF joint pos in degrees, URDF order."""
 
     joint_pos = ObsTerm(
-        func=mdp.joint_pos_feetech,
+        func=mdp.joint_pos_deg,
         params={
             "asset_name": "robot",
             "joint_names": SO101_JOINT_NAMES,
-            "scale": SO101_FEETECH_SCALE,
-            "offset": SO101_FEETECH_OFFSET,
         },
     )
 
@@ -87,7 +87,7 @@ class SO101CubeLiftEnvCfg(LiftEnvCfg):
 
         self.scene.robot = SO101_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
-        # Action: Feetech-normalized [-100, 100] → radians via per-joint scale+offset.
+        # Action: degrees → radians via uniform scale (π/180), zero offset.
         # IsaacLab's JointPositionActionCfg computes `target_rad = scale * action + offset`.
         # Split into two terms (arm + gripper) to fit base ActionsCfg structure;
         # ActionManager concatenates them in declaration order so the full input is
@@ -95,16 +95,16 @@ class SO101CubeLiftEnvCfg(LiftEnvCfg):
         self.actions.arm_action = mdp.JointPositionActionCfg(
             asset_name="robot",
             joint_names=_ARM_JOINTS,
-            scale={n: SO101_FEETECH_SCALE[n] for n in _ARM_JOINTS},
-            offset={n: SO101_FEETECH_OFFSET[n] for n in _ARM_JOINTS},
+            scale=SO101_DEG_TO_RAD,
+            offset=0.0,
             use_default_offset=False,
             preserve_order=True,
         )
         self.actions.gripper_action = mdp.JointPositionActionCfg(
             asset_name="robot",
             joint_names=_GRIPPER_JOINTS,
-            scale={n: SO101_FEETECH_SCALE[n] for n in _GRIPPER_JOINTS},
-            offset={n: SO101_FEETECH_OFFSET[n] for n in _GRIPPER_JOINTS},
+            scale=SO101_DEG_TO_RAD,
+            offset=0.0,
             use_default_offset=False,
             preserve_order=True,
         )

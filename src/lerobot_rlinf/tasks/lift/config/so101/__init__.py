@@ -18,3 +18,21 @@ gym.register(
     },
     disable_env_checker=True,
 )
+
+gym.register(
+    id="Isaac-Lift-Sponge-Bowl-SO101-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.sponge_bowl_cfg:SO101SpongeBowlEnvCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Sponge-Bowl-SO101-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.sponge_bowl_cfg:SO101SpongeBowlEnvCfg_PLAY",
+    },
+    disable_env_checker=True,
+)

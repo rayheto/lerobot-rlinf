@@ -64,6 +64,15 @@ here so we don't pay the cost twice.
 - IsaacLab is editable-installed from `third_party/IsaacLab/` (gitignored).
   Re-running `pip install -e source/*` after `git pull` is enough; no need to
   rerun `isaaclab.sh -i`.
+- **Don't install `lerobot` (or `accelerate`) into `rlinf-isaacsim-env`.**
+  Both transitively pull numpy>=2, which breaks Isaac Sim 5.1 hard:
+  hundreds of `isaacsim.*` extensions fail to load with
+  `AttributeError: module 'numpy' has no attribute '_no_nep50_warning'`.
+  `isaacsim-kernel==5.1.0.0` pins `numpy==1.26.0`. If you need dataset
+  access from inside the Isaac env (e.g. for the replay sanity script),
+  read the parquet shards directly via pyarrow from `HF_LEROBOT_HOME`;
+  don't import `LeRobotDataset`. Recovery if already broken:
+  `pip install "numpy==1.26.0"` — Isaac extensions reload on next run.
 
 ## Cosmetic warnings (safe to ignore)
 
@@ -109,6 +118,56 @@ this when wiring W2.
 **Implication for the env**: do not pre-bake any of this into env cfg.
 Bridging (key rename, dtype/scale, dataset→env action units) belongs in
 a runtime wrapper, written when the concrete finetune is in hand.
+
+## SFT smoke debugging (Pi 0.5 + lerobot 0.4.4)
+
+Lessons from getting `scripts/sft_smoke.sh` to pass in the
+`rlinf-lerobot-train` env. Save the next person hours.
+
+- **`lerobot[pi]` extra is broken in 0.4.4.** Pip warns the extra doesn't
+  exist; base install succeeds but is missing `transformers`. Install it
+  yourself — and not vanilla.
+- **Pi 0.5 needs a patched transformers fork.** Vanilla `transformers`
+  lacks `transformers.models.siglip.check` which `modeling_pi05.py`
+  imports at load. Install the lerobot-openpi branch:
+  ```
+  pip install --force-reinstall --no-deps \
+    "transformers @ git+https://github.com/huggingface/transformers.git@fix/lerobot_openpi"
+  ```
+  Resolves to 4.53.3. `--no-deps` to keep hf-hub<0.36 (lerobot pin).
+  Verify: `from transformers.models.siglip import check;
+  check.check_whether_transformers_replace_is_installed_correctly()` → True.
+- **First `pip install ... git+...` may silently no-op.** Pip sees the
+  cached version and skips. `--force-reinstall` is mandatory the first
+  time, not optional.
+- **Dataset revision pin.** Public LeRobot datasets often lack the v3.0
+  git tag the code checks for → `RevisionNotFoundError`. Pass
+  `--dataset.revision=main` to bypass.
+- **PaliGemma tokenizer is gated per HF account.** Pi 0.5 pulls
+  `google/paligemma-3b-pt-224`; token alone isn't enough — accept the
+  license at https://huggingface.co/google/paligemma-3b-pt-224 with the
+  account whose token you're using. Verify with
+  `huggingface_hub.hf_hub_download('google/paligemma-3b-pt-224', 'config.json')`.
+- **`--policy.repo_id` is required even when not pushing.** lerobot
+  validates it before the `push_to_hub` check. Pass a dummy:
+  `--policy.push_to_hub=false --policy.repo_id=local/<run_name>`.
+- **Camera-key bridge to pi05_base.** `pi05_base` declares 3 cameras
+  (`base_0_rgb`, `left_wrist_0_rgb`, `right_wrist_0_rgb`); the
+  aswinkumar99 SO-101 dataset has 2 (`overhead`, `wrist`). Bridge via
+  CLI, no code change:
+  ```
+  --policy.empty_cameras=1
+  --rename_map='{"observation.images.overhead":"observation.images.base_0_rgb",
+                 "observation.images.wrist":"observation.images.right_wrist_0_rgb"}'
+  ```
+- **24GB VRAM recipe for 4B Pi 0.5.** All four together fit comfortably:
+  `--policy.train_expert_only=true` (freezes the 2B VLM, trains only the
+  300M action expert + projections), `--policy.freeze_vision_encoder=true`,
+  `--policy.dtype=bfloat16`, `--policy.gradient_checkpointing=true`.
+  Verified: 4B total / 693M trainable, ~1.7 steps/s at batch=1 on a 4090D.
+- **Benign warning to ignore.** `Missing key(s) in state_dict:
+  ...language_model.embed_tokens.weight` prints on load. Training
+  proceeds normally — it's a weight-remap artifact in the Pi 0.5 load path.
 
 ## Simulation Settings panel (Isaac Sim UI)
 

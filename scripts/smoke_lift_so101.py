@@ -42,8 +42,8 @@ print(f"[SMOKE] observation_space={env.observation_space}")
 
 obs, _ = env.reset()
 state = obs["policy"] if isinstance(obs, dict) else obs
-print(f"[SMOKE] reset OK, observation.state shape={tuple(state.shape)} (expect [B, 6] Feetech-norm)")
-print(f"[SMOKE] state row 0 = {state[0].tolist()}")
+print(f"[SMOKE] reset OK, observation.state shape={tuple(state.shape)} (expect [B, 6] degrees)")
+print(f"[SMOKE] state row 0 = {state[0].tolist()}  (expect arm joints ~0°, gripper ~45.8°)")
 
 if isinstance(obs, dict) and "images" in obs:
     for name, tensor in obs["images"].items():
@@ -52,9 +52,9 @@ if isinstance(obs, dict) and "images" in obs:
             f"min={int(tensor.min())} max={int(tensor.max())}"
         )
 
-# Action is [B, 6] in Feetech-normalized [-100, 100], URDF joint order:
+# Action is [B, 6] in degrees, URDF joint order:
 # [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper].
-# Zero action = 0% on every joint → arm at home pose, gripper at calibration center.
+# Zero action = 0° on every joint → URDF mechanical zero pose.
 action_dim = env.action_space.shape[1] if len(env.action_space.shape) > 1 else env.action_space.shape[0]
 assert action_dim == 6, f"expected action_dim=6 (SO-101), got {action_dim}"
 
@@ -65,9 +65,9 @@ with torch.inference_mode():
         if i % 5 == 0:
             print(f"[SMOKE] step {i:3d}  rew_mean={rew.float().mean().item():+.4f}  term={int(term.sum())}  trunc={int(trunc.sum())}")
 
-# State should be near 0% on every joint after holding home for `steps` steps.
+# State should be near 0° per joint after holding zero command (modulo gravity sag).
 final_state = obs["policy"]
-print(f"[SMOKE] final state row 0 = {final_state[0].tolist()}  (expect all near 0 in Feetech-norm)")
+print(f"[SMOKE] final state row 0 = {final_state[0].tolist()}  (expect arm ~0°, gripper ~0°)")
 
 print("[SMOKE] OK")
 

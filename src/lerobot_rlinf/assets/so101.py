@@ -3,6 +3,7 @@
 Joint order (URDF): shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper.
 USD is produced by `scripts/convert_urdf_to_usd.py` from the vendored URDF + meshes.
 """
+import math
 from pathlib import Path
 
 import isaaclab.sim as sim_utils
@@ -23,29 +24,14 @@ SO101_JOINT_NAMES = [
     "gripper",
 ]
 
-# Per-joint Feetech ↔ URDF-radian calibration. LeRobot real-robot teleop captures
-# action/state as normalized [-100, 100]% of each Feetech motor's calibrated
-# extremes. To mimic that interface in sim, we map norm ↔ rad via:
-#     rad = scale * norm + offset
-#     norm = (rad - offset) / scale
-# Values derived from URDF joint limits: scale = (upper-lower)/200,
-# offset = (upper+lower)/2.
-SO101_FEETECH_SCALE = {
-    "shoulder_pan": 0.01920,    # ±1.920 rad
-    "shoulder_lift": 0.01745,   # ±1.745 rad
-    "elbow_flex": 0.01690,      # ±1.690 rad
-    "wrist_flex": 0.01658,      # ±1.658 rad
-    "wrist_roll": 0.027925,     # [-2.744, +2.841] rad — asymmetric
-    "gripper": 0.00960,         # [-0.175, +1.745] rad — asymmetric
-}
-SO101_FEETECH_OFFSET = {
-    "shoulder_pan": 0.0,
-    "shoulder_lift": 0.0,
-    "elbow_flex": 0.0,
-    "wrist_flex": 0.0,
-    "wrist_roll": 0.0485,
-    "gripper": 0.785,
-}
+# LeRobot v3.0 SO-101 datasets capture action/state in **degrees**, with 0°
+# anchored at the URDF mechanical zero (verified against
+# aswinkumar99/LeRobot-SO101-task1-* stats.json — value ranges roughly match
+# URDF joint limits expressed in degrees). To mimic that interface in sim:
+#     rad = SO101_DEG_TO_RAD * deg + 0    (action: deg → rad)
+#     deg = rad / SO101_DEG_TO_RAD        (obs:    rad → deg)
+# No per-joint dict needed — uniform conversion.
+SO101_DEG_TO_RAD = math.pi / 180.0
 
 
 SO101_CFG = ArticulationCfg(

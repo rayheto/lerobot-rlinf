@@ -56,6 +56,14 @@
   fastapi 不在训练/rollout 链路里。
 - IsaacLab 是 editable 装在 `third_party/IsaacLab/`（已 gitignore）。
   `git pull` 之后重跑 `pip install -e source/*` 就行，不用再跑 `isaaclab.sh -i`。
+- **`rlinf-isaacsim-env` 里不要装 `lerobot`（或 `accelerate`）。**
+  这俩会拖 numpy>=2 进来，Isaac Sim 5.1 直接崩 —— 几百个
+  `isaacsim.*` 扩展全报 `AttributeError: module 'numpy' has no
+  attribute '_no_nep50_warning'` 加载失败。`isaacsim-kernel==5.1.0.0`
+  锁的是 `numpy==1.26.0`。如果要在 Isaac env 里读数据集（比如
+  replay sanity 脚本），直接拿 pyarrow 读 `HF_LEROBOT_HOME` 下的
+  parquet 分片，不要 import `LeRobotDataset`。已经踩坑了的修法：
+  `pip install "numpy==1.26.0"`，下次跑 Isaac 扩展会重新 load 上。
 
 ## 可以安全忽略的警告
 
@@ -98,6 +106,52 @@
 **对 env 的含义**：以上这些都不要 hardcode 进 env cfg。
 key rename、dtype/scale、数据集 → env action 单位换算这些事
 全部放到 runtime wrapper 里写，等拿到具体的 finetune 再动手。
+
+## SFT 冒烟调试（Pi 0.5 + lerobot 0.4.4）
+
+把 `scripts/sft_smoke.sh` 跑通的踩坑记录，省下次几个小时。环境为
+`rlinf-lerobot-train`。
+
+- **`lerobot[pi]` extra 在 0.4.4 里是坏的。** pip 会警告 extra 不存在；
+  基础安装能成功但缺 `transformers`。需要手动装，而且不能装 vanilla。
+- **Pi 0.5 需要打过补丁的 transformers fork。** vanilla `transformers`
+  里没有 `transformers.models.siglip.check` 模块，`modeling_pi05.py`
+  加载时直接 ImportError。装 lerobot-openpi 分支：
+  ```
+  pip install --force-reinstall --no-deps \
+    "transformers @ git+https://github.com/huggingface/transformers.git@fix/lerobot_openpi"
+  ```
+  解析为 4.53.3。`--no-deps` 保住 hf-hub<0.36（lerobot 的 pin）。
+  验证：`from transformers.models.siglip import check;
+  check.check_whether_transformers_replace_is_installed_correctly()` 返回 True。
+- **第一次 `pip install ... git+...` 可能静默跳过。** pip 看到缓存版本
+  就不装了，第一次必须加 `--force-reinstall`，不是可选项。
+- **数据集 revision pin。** 公开 LeRobot 数据集常常没有代码侧检查的
+  v3.0 git tag → `RevisionNotFoundError`。CLI 加 `--dataset.revision=main` 绕过。
+- **PaliGemma tokenizer 是按 HF 账号 gate 的。** Pi 0.5 会拉
+  `google/paligemma-3b-pt-224`，光有 token 不够 —— 必须用对应账号
+  去 https://huggingface.co/google/paligemma-3b-pt-224 接受协议。
+  验证：`huggingface_hub.hf_hub_download('google/paligemma-3b-pt-224', 'config.json')`。
+- **`--policy.repo_id` 即使不 push 也是必填的。** lerobot 在
+  `push_to_hub` 检查之前就 validate 了。塞个占位：
+  `--policy.push_to_hub=false --policy.repo_id=local/<run_name>`。
+- **相机 key 对齐 pi05_base。** `pi05_base` 声明 3 个相机
+  （`base_0_rgb`、`left_wrist_0_rgb`、`right_wrist_0_rgb`），
+  aswinkumar99 的 SO-101 数据集只有 2 个（`overhead`、`wrist`）。
+  CLI 桥接，不改代码：
+  ```
+  --policy.empty_cameras=1
+  --rename_map='{"observation.images.overhead":"observation.images.base_0_rgb",
+                 "observation.images.wrist":"observation.images.right_wrist_0_rgb"}'
+  ```
+- **4B Pi 0.5 在 24GB 显存上的配方。** 四个一起开能舒服塞下：
+  `--policy.train_expert_only=true`（冻结 2B VLM，只训 300M action expert
+  + projections）、`--policy.freeze_vision_encoder=true`、
+  `--policy.dtype=bfloat16`、`--policy.gradient_checkpointing=true`。
+  实测：4B 总参 / 693M 可训，4090D 上 batch=1 大约 1.7 steps/s。
+- **可以无视的 warning。** 加载时会打
+  `Missing key(s) in state_dict: ...language_model.embed_tokens.weight`，
+  训练照样正常 —— 是 Pi 0.5 load 路径里的权重重映射残留。
 
 ## Simulation Settings 面板（Isaac Sim UI）
 
