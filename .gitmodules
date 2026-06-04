@@ -1,3 +1,10 @@
 [submodule "third_party/leisaac"]
 	path = third_party/leisaac
 	url = https://github.com/LightwheelAI/leisaac
+[submodule "third_party/RLinf"]
+	path = third_party/RLinf
+	url = https://github.com/woshinideba1425/RLinf.git
+[submodule "third_party/openpi"]
+	path = third_party/openpi
+	url = https://github.com/EverNorif/openpi.git
+	branch = lerobot-v0.3.3
