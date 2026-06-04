@@ -206,6 +206,15 @@ log_prob 怎么算。如果是 ELBO 近似，留意 variance 大不大。
 
 ## 六、变更历史
 
+- **2026-06-03**：pick_orange SFT step-2000 中途 ckpt 的 eval baseline
+  （4 episodes，max_steps=400，GUI on :110）。结果 SR=0/4，全程
+  `success=0 steps=400`。DIAG 显示 chunk action 数值合理（joint 角
+  ±90° 内）但抖动剧烈，state 一步从 [0]×6 被甩到约 [47,-47,46,38,47,47]，
+  没有抓取行为。**预期之内**：2k / 30k = 6.7%，AV1 视频解码瓶颈使
+  effective 数据吞吐很低，模型仍接近初始化。本次 eval 目的是验证
+  pipeline（env ready / model loaded / chunk 推理 / success DoneTerm
+  统计 全通），不是判定 SFT 质量。日志 `/tmp/eval_pickorange_2k_gui2.log`。
+  下一步：resume 训练，等到 step 10k / 20k 再 eval 比较。
 - **2026-06-02（晚）**：目标任务从 `LeIsaac-SO101-LiftCube-v0` 切换到
   `LeIsaac-SO101-PickOrange-v0`。原因：(1) pick_orange 在 HF 有公开数据集
   `LightwheelAI/leisaac-pick-orange`，可直接做 in-domain SFT；lift_cube

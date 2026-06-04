@@ -21,25 +21,33 @@ Run with the RLinf .venv python:
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
 
 import safetensors.torch as st
 
-SRC_CKPT = Path(
-    "/home/hlei/robotic/lerobot-rlinf/outputs/sft_pi05_sponge/checkpoints/010000/pretrained_model/model.safetensors"
+SRC_CKPT = Path(os.environ.get(
+    "LEROBOT_CKPT",
+    "/home/hlei/robotic/lerobot-rlinf/outputs/sft_pi05_sponge/checkpoints/010000/pretrained_model/model.safetensors",
+))
+OUT_DIR = Path(os.environ.get(
+    "REMAP_OUT_DIR",
+    "/home/hlei/robotic/lerobot-rlinf/outputs/sft_pi05_sponge/openpi_remapped",
+))
+ASSET_SUBPATH = os.environ.get(
+    "ASSET_SUBPATH",
+    "aswinkumar99/LeRobot-SO101-task1-single-sponge-no-distractors-random-locations",
 )
-OUT_DIR = Path(
-    "/home/hlei/robotic/lerobot-rlinf/outputs/sft_pi05_sponge/openpi_remapped"
-)
-ASSET_SUBPATH = "aswinkumar99/LeRobot-SO101-task1-single-sponge-no-distractors-random-locations"
-NORM_STATS_SRC = Path(
-    "/home/hlei/RLinf/assets/pi05_isaaclab_so101_lift"
-) / ASSET_SUBPATH / "norm_stats.json"
-AUDIT_RENAMES_JSON = Path(
-    "/home/hlei/robotic/lerobot-rlinf/outputs/sft_pi05_sponge/key_audit.renames.json"
-)
+NORM_STATS_SRC = Path(os.environ.get(
+    "NORM_STATS_SRC",
+    str(Path("/home/hlei/RLinf/assets/pi05_isaaclab_so101_lift") / ASSET_SUBPATH / "norm_stats.json"),
+))
+AUDIT_RENAMES_JSON = Path(os.environ.get(
+    "AUDIT_RENAMES_JSON",
+    "/home/hlei/robotic/lerobot-rlinf/outputs/sft_pi05_sponge/key_audit.renames.json",
+))
 
 # Filled from key_audit.renames.json (the shape-unambiguous orphan pairs).
 # This is the only manual rename beyond the bulk `model.` prefix strip.

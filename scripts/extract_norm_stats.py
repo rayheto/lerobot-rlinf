@@ -15,24 +15,34 @@ Run with the RLinf .venv python:
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
 
 import safetensors.torch as st
 
-LEROBOT_NORM = Path(
-    "/home/hlei/robotic/lerobot-rlinf/outputs/sft_pi05_sponge/checkpoints/010000/pretrained_model/policy_preprocessor_step_2_normalizer_processor.safetensors"
+LEROBOT_NORM = Path(os.environ.get(
+    "LEROBOT_NORM",
+    "/home/hlei/robotic/lerobot-rlinf/outputs/sft_pi05_sponge/checkpoints/010000/pretrained_model/policy_preprocessor_step_2_normalizer_processor.safetensors",
+))
+
+ASSET_SUBPATH = os.environ.get(
+    "ASSET_SUBPATH",
+    "aswinkumar99/LeRobot-SO101-task1-single-sponge-no-distractors-random-locations",
 )
 
-ASSET_SUBPATH = "aswinkumar99/LeRobot-SO101-task1-single-sponge-no-distractors-random-locations"
-
-TARGETS = [
-    Path("/home/hlei/RLinf/assets/pi05_isaaclab_so101_lift") / ASSET_SUBPATH / "norm_stats.json",
-    Path(
-        "/home/hlei/.cache/huggingface/hub/models--lerobot--pi05_base/snapshots/9e55186ad36e66b95cda57bc47818d9e6237ae30"
-    ) / ASSET_SUBPATH / "norm_stats.json",
+# Comma-separated extra target paths via env; defaults are the two known
+# norm_stats locations RLinf openpi reads on actor init.
+_default_targets = [
+    str(Path("/home/hlei/RLinf/assets/pi05_isaaclab_so101_lift") / ASSET_SUBPATH / "norm_stats.json"),
+    str(
+        Path("/home/hlei/.cache/huggingface/hub/models--lerobot--pi05_base/snapshots/9e55186ad36e66b95cda57bc47818d9e6237ae30")
+        / ASSET_SUBPATH
+        / "norm_stats.json"
+    ),
 ]
+TARGETS = [Path(p) for p in os.environ.get("NORM_STATS_TARGETS", ",".join(_default_targets)).split(",") if p]
 
 # (lerobot feature name, openpi norm_stats key)
 FEATURES = [

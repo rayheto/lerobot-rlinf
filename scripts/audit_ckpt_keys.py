@@ -11,6 +11,7 @@ keys we have to hand-rename in Step C beyond the bulk `model.` prefix strip.
 from __future__ import annotations
 
 import json
+import os
 import random
 import sys
 from collections import defaultdict
@@ -19,12 +20,14 @@ from pathlib import Path
 import safetensors
 import torch
 
-LEROBOT_CKPT = Path(
-    "/home/hlei/robotic/lerobot-rlinf/outputs/sft_pi05_sponge/checkpoints/010000/pretrained_model/model.safetensors"
-)
-REPORT_PATH = Path(
-    "/home/hlei/robotic/lerobot-rlinf/outputs/sft_pi05_sponge/key_audit.txt"
-)
+LEROBOT_CKPT = Path(os.environ.get(
+    "LEROBOT_CKPT",
+    "/home/hlei/robotic/lerobot-rlinf/outputs/sft_pi05_sponge/checkpoints/010000/pretrained_model/model.safetensors",
+))
+REPORT_PATH = Path(os.environ.get(
+    "AUDIT_REPORT_PATH",
+    "/home/hlei/robotic/lerobot-rlinf/outputs/sft_pi05_sponge/key_audit.txt",
+))
 OPENPI_CONFIG_NAME = "pi05_isaaclab_so101_lift"
 
 
