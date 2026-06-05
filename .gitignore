@@ -19,6 +19,8 @@ wandb/
 .vscode/
 .idea/
 .claude/
+.codegraph/
+.understand-anything/
 *.swp
 .DS_Store
 
