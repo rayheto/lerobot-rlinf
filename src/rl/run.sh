@@ -28,7 +28,9 @@ export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
 export LEISAAC_ASSETS_ROOT="${LEISAAC_ASSETS_ROOT:-${REPO_ROOT}/third_party/leisaac/assets}"
 # Memory: opt into bnb 8-bit AdamW (sitecustomize swaps torch.optim.AdamW)
 # and enable expandable_segments to reduce fragmentation under tight VRAM.
-export RLINF_BNB_ADAMW8BIT="${RLINF_BNB_ADAMW8BIT:-1}"
+# DSRL doesn't need bnb (only ~500K trainable params, fp32 AdamW is fine).
+# PPO configs that hit the 24GB ceiling can re-enable by setting it on the env.
+export RLINF_BNB_ADAMW8BIT="${RLINF_BNB_ADAMW8BIT:-0}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 # Cap thread fan-out — BLAS/OMP/MKL each default to ncores, and Isaac Sim +
 # Ray workers each multiply that. On a single GPU dryrun we don't benefit
