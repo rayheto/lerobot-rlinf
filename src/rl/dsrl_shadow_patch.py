@@ -20,6 +20,37 @@ from typing import Optional
 
 _PATCHED = False
 _HOOKED = False
+_FSDP_PATCHED = False
+
+
+def _patch_fsdp_writeback() -> None:
+    """Tolerate stale grad shape in FSDP writeback after offload roundtrip.
+
+    With use_orig_params=True + enable_offload (custom CPU↔GPU shuffle),
+    FSDP's _writeback_tensor sees grads whose shape == orig param shape
+    (e.g. [128,128]) instead of the flattened expected_shape ([16384]),
+    and raises RuntimeError. numel matches — reshape and proceed.
+    Reproduced at ~10 steps on prod DSRL pi0.5 + FSDP no_shard."""
+    global _FSDP_PATCHED
+    if _FSDP_PATCHED:
+        return
+    try:
+        from torch.distributed.fsdp import _flat_param as _fp
+    except Exception:
+        return
+    orig = _fp.FlatParamHandle._writeback_tensor
+
+    def _patched(self, src_tensor, dst_tensor, tensor_index, expected_shape, offset, is_param):
+        if (
+            src_tensor is not None
+            and src_tensor.shape != expected_shape
+            and src_tensor.numel() == expected_shape.numel()
+        ):
+            src_tensor = src_tensor.reshape(expected_shape)
+        return orig(self, src_tensor, dst_tensor, tensor_index, expected_shape, offset, is_param)
+
+    _fp.FlatParamHandle._writeback_tensor = _patched
+    _FSDP_PATCHED = True
 
 _TARGET_MODULE = "rlinf.workers.actor.fsdp_sac_policy_worker"
 
