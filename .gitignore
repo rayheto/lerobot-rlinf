@@ -12,6 +12,7 @@ assets/so_arm100/**/*.usda
 outputs/
 checkpoints/
 wandb/
+logs/
 *.ckpt
 *.pt
 

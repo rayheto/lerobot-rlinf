@@ -1,0 +1,211 @@
+# Single-GPU smoke / dry-run variant of pick_orange_ppo.yaml.
+#
+# Diffs vs the production training config:
+#   - cluster.component_placement collocates rollout+env+actor on the
+#     same group (single 4090 doesn't have 4 GPUs to split across).
+#   - total_num_envs=1 and max_steps=50 — just enough to walk one full
+#     obs→reward→value→loss cycle and surface shape mismatches early.
+#   - video off so we don't burn time encoding mp4 during smoke.
+# Everything else (reward, ood_reward, kl_beta, openpi config, model
+# path) is identical to pick_orange_ppo so the dry-run exercises the
+# same code paths.
+
+defaults:
+  - model/pi0_5@actor.model
+  - training_backend/fsdp@actor.fsdp_config
+  - weight_syncer/bucket_syncer@weight_syncer
+  - _self_
+  - override hydra/job_logging: stdout
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+    - file://${oc.env:EMBODIED_PATH}/config/
+
+cluster:
+  num_nodes: 1
+  component_placement:
+    rollout, env, actor: all
+
+runner:
+  task_type: embodied
+  logger:
+    log_path: "./logs/pick_orange_ppo_dryrun"
+    project_name: rlinf
+    experiment_name: "pick_orange_ppo_dryrun"
+    logger_backends: ["tensorboard"]
+
+  only_eval: False
+
+  max_epochs: 1
+  max_steps: 50
+
+  val_check_interval: -1
+  save_interval: 1000
+  seq_length: 4096
+  max_prompt_length: 50
+
+  resume_dir: null
+  ckpt_path: null
+
+algorithm:
+  normalize_advantages: True
+  kl_penalty: kl
+  group_size: 1
+  rollout_epoch: 1
+  eval_rollout_epoch: 1
+
+  reward_type: chunk_level
+  logprob_type: token_level
+  entropy_type: token_level
+
+  adv_type: gae
+  loss_type: actor_critic
+  loss_agg_func: "token-mean"
+  kl_beta: 0.02
+  entropy_bonus: 0
+  clip_ratio_high: 0.2
+  clip_ratio_low: 0.2
+  clip_ratio_c: 3.0
+  value_clip: 0.2
+  huber_delta: 10.0
+  gamma: 0.99
+  gae_lambda: 0.95
+
+  sampling_params:
+    do_sample: True
+    temperature_train: 1.0
+    temperature_eval: 0.6
+    top_k: 50
+    top_p: 1.0
+    repetition_penalty: 1.0
+
+  length_params:
+    max_new_token: null
+    max_length: 1024
+    min_length: 1
+
+  reward_coef: 1.0
+
+_env_common: &env_common
+  env_type: isaaclab
+  total_num_envs: 1
+  auto_reset: False
+  ignore_terminations: False
+  use_rel_reward: False
+  seed: 0
+  group_size: 1
+  reward_coef: ${algorithm.reward_coef}
+  use_fixed_reset_state_ids: False
+  max_steps_per_rollout_epoch: 50
+  max_episode_steps: 900
+  single_orange: True
+
+  ood_reward:
+    demo_dataset_path: "/home/hlei/.cache/huggingface/lerobot/EverNorif/leisaac-pick-orange"
+    k_neighbors: 5
+    coef: 1.0
+
+  reward:
+    reach: -0.5
+    grasp: 1.0
+    lift: 3.0
+    align: -0.5
+    place: 5.0
+    rest: 1.0
+    success: 10.0
+    step: -0.001
+    lift_h_max: 0.10
+    grasp_diff_threshold: 0.05
+    grasp_close_threshold: 0.60
+    grasp_lift_threshold: 0.06
+
+  init_params:
+    id: "LeIsaac-SO101-PickOrange-v0"
+    num_envs: null
+    max_episode_steps: 900
+    task_description: "Pick the orange and place it on the plate, then return the arm to rest."
+    wrist_cam:
+      height: 224
+      width: 224
+    front_cam:
+      height: 224
+      width: 224
+
+env:
+  group_name: "EnvGroup"
+  train:
+    <<: *env_common
+    video_cfg:
+      save_video: False
+      info_on_video: False
+      fps: 30
+      video_base_dir: ${runner.logger.log_path}/video/train
+  eval:
+    <<: *env_common
+    video_cfg:
+      save_video: False
+      info_on_video: False
+      fps: 30
+      video_base_dir: ${runner.logger.log_path}/video/eval
+
+rollout:
+  group_name: "RolloutGroup"
+  backend: "huggingface"
+  enable_offload: True
+  pipeline_stage_num: 1
+
+  model:
+    model_path: "/home/hlei/robotic/lerobot-rlinf/outputs/pi05_lora_so101_pick_orange/so101_pick_orange_lora_v0/24999_pt"
+    precision: ${actor.model.precision}
+
+actor:
+  group_name: "ActorGroup"
+  training_backend: "fsdp"
+  micro_batch_size: 1
+  global_batch_size: 1
+  seed: 1234
+  num_steps: 1
+  enable_offload: True
+
+  model:
+    model_path: ${rollout.model.model_path}
+    add_value_head: True
+    num_images_in_input: 2
+    proprio_dim: 6
+    action_dim: 6
+    num_action_chunks: 50
+    openpi:
+      config_name: "pi05_isaaclab_so101_pick_orange"
+      detach_critic_input: True
+      joint_logprob: False
+      noise_level: 0.5
+      action_env_dim: ${actor.model.action_dim}
+      noise_method: "flow_sde"
+      train_expert_only: True
+
+  optim:
+    lr: 1.0e-4
+    value_lr: 3.0e-3
+    adam_beta1: 0.9
+    adam_beta2: 0.999
+    adam_eps: 1.0e-08
+    clip_grad: 10.0
+    weight_decay: 0.01
+    critic_warmup_steps: 0
+
+  fsdp_config:
+    strategy: "fsdp"
+    gradient_checkpointing: True
+    mixed_precision:
+      param_dtype: ${actor.model.precision}
+      reduce_dtype: ${actor.model.precision}
+      buffer_dtype: ${actor.model.precision}
+
+reward:
+  use_reward_model: False
+
+critic:
+  use_critic_model: False
