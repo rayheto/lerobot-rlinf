@@ -80,7 +80,7 @@ algorithm:
 
 _env_common: &env_common
   env_type: isaaclab
-  total_num_envs: 8
+  total_num_envs: 2
   auto_reset: False
   ignore_terminations: False
   use_rel_reward: False
@@ -88,25 +88,15 @@ _env_common: &env_common
   group_size: 1
   reward_coef: 1.0
   use_fixed_reset_state_ids: False
-  max_steps_per_rollout_epoch: 900
-  max_episode_steps: 900
-  single_orange: True
-
-  ood_reward:
-    demo_dataset_path: "/home/hlei/.cache/huggingface/lerobot/EverNorif/leisaac-pick-orange"
-    k_neighbors: 5
-    coef: 1.0
+  max_steps_per_rollout_epoch: 300
+  max_episode_steps: 300
 
   reward:
-    reach: -0.5
-    grasp: 1.0
-    lift: 3.0
-    align: -0.5
-    place: 5.0
-    rest: 1.0
-    success: 10.0
-    step: -0.001
-    lift_h_max: 0.10
+    grasp_bonus: 10.0
+    carry_speed_coef: 0.5
+    place_bonus: 20.0
+    drop_penalty: -5.0
+    timeout_penalty: -2.0
     grasp_diff_threshold: 0.05
     grasp_close_threshold: 0.60
     grasp_lift_threshold: 0.06

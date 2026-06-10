@@ -26,18 +26,13 @@ export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
 # leisaac's constant.py picks the OUTER git root as ASSETS_ROOT, which
 # resolves wrong in this nested submodule layout. Pin it.
 export LEISAAC_ASSETS_ROOT="${LEISAAC_ASSETS_ROOT:-${REPO_ROOT}/third_party/leisaac/assets}"
-# Memory: opt into bnb 8-bit AdamW (sitecustomize swaps torch.optim.AdamW)
-# and enable expandable_segments to reduce fragmentation under tight VRAM.
-# DSRL doesn't need bnb (only ~500K trainable params, fp32 AdamW is fine).
-# PPO configs that hit the 24GB ceiling can re-enable by setting it on the env.
-export RLINF_BNB_ADAMW8BIT="${RLINF_BNB_ADAMW8BIT:-0}"
-# Skip FSDP wrap on single-GPU + no_shard runs. FSDP provides no value
-# there (no sharding, no all-gather) but its flat_param/use_orig_params
-# state corrupts under our custom CPU↔GPU offload, breaking training at
-# ~step 10. Bypass replaces wrap_model with model.to(device) and walks
-# named_parameters() for offload. See src/rl/dsrl_fsdp_bypass.py.
-export RLINF_FSDP_BYPASS="${RLINF_FSDP_BYPASS:-1}"
+# Inject SO-101 openpi dataconfig + policy into upstream RLinf at import time
+# (we keep third_party/RLinf clean on upstream main; SO-101 lives in src/rl/).
+export RLINF_OPENPI_SO101_PATCH="${RLINF_OPENPI_SO101_PATCH:-1}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+# Point Ray dashboard at the Grafana we launched on :3001 (3000 occupied).
+export RAY_GRAFANA_HOST="${RAY_GRAFANA_HOST:-http://127.0.0.1:3001}"
+export RAY_PROMETHEUS_HOST="${RAY_PROMETHEUS_HOST:-http://127.0.0.1:9090}"
 # Cap thread fan-out — BLAS/OMP/MKL each default to ncores, and Isaac Sim +
 # Ray workers each multiply that. On a single GPU dryrun we don't benefit
 # from CPU parallelism; capping prevents machine-wide lag.
