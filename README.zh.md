@@ -55,6 +55,12 @@
 
 ## 评测成果 —— pick_orange (SO-101)
 
+一段成功的 RL rollout（3 个橘子依次抓起 → 放进盘子 → 末端归位）：
+
+https://github.com/rayheto/lerobot-rlinf/raw/develop/docs/attachments/success_example.mp4
+
+<sub>源文件：[docs/attachments/success_example.mp4](docs/attachments/success_example.mp4)</sub>
+
 `src/rl/simple/` 是一套单进程 PPO，冻结 π₀.₅ + 一个小的高斯残差头。200 PPO iter
 （约 1.0 M env steps，单 4090，约 7 小时）。下表所有数字：n=60 集，num_envs=12，
 fast<900 表示 30 s 仿真时间内成功，failA=0 即没有任何碰撞/掉落，失败全是超时。

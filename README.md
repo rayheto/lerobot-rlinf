@@ -58,6 +58,12 @@ What's **planned** (not wired yet):
 
 ## Eval results — pick_orange (SO-101)
 
+A successful RL rollout (3 oranges picked → placed → arm returns to rest):
+
+https://github.com/rayheto/lerobot-rlinf/raw/develop/docs/attachments/success_example.mp4
+
+<sub>Source file: [docs/attachments/success_example.mp4](docs/attachments/success_example.mp4)</sub>
+
 `src/rl/simple/` is a single-process PPO on a frozen π₀.₅ + small Gaussian residual
 head. 200 PPO iters (~1.0 M env steps, single 4090, ~7 h). All numbers below:
 n=60 eps, num_envs=12, fast<900 means success within 30 s of sim time, failA=0 means
