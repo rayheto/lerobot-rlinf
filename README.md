@@ -18,7 +18,7 @@ together for the SO-ARM100 / SO-101 arm and adds the analysis layer on top.
                        ┌─────────────────────────────────────────┐
    sft_train.py  ───►  │  third_party/openpi  (LoRA π₀.₅ kernel) │
                        └─────────────────────────────────────────┘
-                                       │ checkpoints/
+                                       │ SFT checkpoints/
                                        ▼
    eval.py ──► spawns ──► openpi serve_policy.py  (WebSocket)
             └► spawns ──► eval_run.py ──► third_party/leisaac (Isaac Lab env)
@@ -31,6 +31,15 @@ together for the SO-ARM100 / SO-101 arm and adds the analysis layer on top.
                                                        │
                                                        ▼
                                   diagnostics report (.json + .md)
+                                                       │
+                                          findings drive reward shaping
+                                                       ▼
+   src/rl/simple/train.py  ──► frozen π₀.₅ (serve_policy) + Gaussian residual head
+                                                       │  PPO + EXP_03/05-aware
+                                                       │  reward (OOD penalty,
+                                                       │  survival cost, dense lift)
+                                                       ▼
+                              residual head ckpt  ──► src/rl/simple/eval.py
 ```
 
 What's **live** today:
@@ -42,7 +51,42 @@ What's **live** today:
 
 What's **planned** (not wired yet):
 - RLinf-driven PPO/GRPO post-training loop. `third_party/RLinf` is checked in but not
-  invoked by anything in `src/` yet.
+  invoked by anything in `src/` yet — superseded in practice by `src/rl/simple/`
+  (single-process PPO, see results below).
+
+---
+
+## Eval results — pick_orange (SO-101)
+
+`src/rl/simple/` is a single-process PPO on a frozen π₀.₅ + small Gaussian residual
+head. 200 PPO iters (~1.0 M env steps, single 4090, ~7 h). All numbers below:
+n=60 eps, num_envs=12, fast<900 means success within 30 s of sim time, failA=0 means
+no collision / drop (all failures are timeouts).
+
+**Two time budgets side-by-side.** Same ckpt, same `simple/eval.py`; the only diff is
+`--episode-length-s` (and matching `--max-ep-steps`). 90 s is the budget the original
+`src/eval.py` actually used (verified via `meta/episodes.jsonl` max-len 2700 @ 30 fps),
+and is what the documented 60 % SFT baseline was scored under.
+
+| ckpt | 45 s succ | 45 s fast<900 | 90 s succ | 90 s fast<900 |
+|---|---|---|---|---|
+| **SFT baseline** (zero residual head) | 28.33 % (17/60) | 6.67 % | **56.67 %** (34/60) | 28.33 % |
+| **RL iter100** (90 s = avg of 2 runs) | 53.33 % (32/60) | 35.00 % | **72.50 %** (avg 73.33 / 71.67) | 43.33 % |
+| **RL iter200** | 61.67 % (37/60) | 45.00 % | **68.33 %** (41/60) | 36.67 % |
+
+- **Doc 60 % baseline strictly reproduced**: SFT v3 56.67 % vs documented 60.0 % —
+  gap 3.3 pp, within 1 σ (~6 pp) for n=60.
+- **RL lift survives the strict 90 s budget**: iter100 +15.83 pp, iter200 +11.66 pp
+  over SFT v3.
+- **iter100 > iter200 reversal at 90 s** (vs iter200 > iter100 at 45 s): ~4 pp gap is
+  at the noise edge — either mild long-tail overfit on iter200, or seed noise. Needs
+  ≥3 seeds to disambiguate.
+- **Budget bonus 45 s → 90 s**: SFT +28.34 pp (almost entirely from the long tail —
+  matches EXP_03 length-inflation 2.735× from `docs/sft_diagnostics_findings.md`);
+  iter200 only +6.66 pp (short-ep success already saturated).
+
+Full report: [docs/simple_ppo_step9_report.md](docs/simple_ppo_step9_report.md).
+Training entry: `src/rl/simple/train.py`. Eval entry: `src/rl/simple/eval.py`.
 
 ---
 
@@ -57,18 +101,31 @@ lerobot-rlinf/
 ├── docs/
 │   ├── notes.md / notes.zh.md                    # canonical setup/gotchas reference
 │   ├── todo.md
-│   └── sft_diagnostics_findings.md               # applied findings from src/diagnostics
+│   ├── sft_diagnostics_findings.md               # applied findings from src/diagnostics
+│   └── simple_ppo_step9_report.md                # simple PPO 200-iter train + eval report
 ├── assets/so_arm100/                             # SO-101 URDF + Isaac USD imports
 ├── src/
 │   ├── sft_train.py     # → openpi train.py (LoRA π₀.₅)
 │   ├── eval.py          # two-process orchestrator: openpi server + eval_run client
 │   ├── eval_run.py      # headless Isaac Lab loop (video + lerobot v2.1 dataset out)
 │   ├── tb_tailer.py     # mirrors openpi train.log → TensorBoard scalars
-│   └── diagnostics/     # ref-vs-candidate dataset diagnostic CLI (python -m src.diagnostics)
-│       ├── __main__.py  base.py  registry.py  result.py  schema.py
-│       ├── io.py        report.py
-│       └── modules/     # episode_length, action_smoothness, compounding_error,
-│                        # mode_averaging, state_coverage
+│   ├── diagnostics/     # ref-vs-candidate dataset diagnostic CLI (python -m src.diagnostics)
+│   │   ├── __main__.py  base.py  registry.py  result.py  schema.py
+│   │   ├── io.py        report.py
+│   │   └── modules/     # episode_length, action_smoothness, compounding_error,
+│   │                    # mode_averaging, state_coverage
+│   └── rl/
+│       ├── envs/                                # Isaac Lab env wrapper + OOD KD-tree
+│       │   ├── isaaclab_pick_orange.py          # subprocess IPC + sparse 3-stage reward
+│       │   └── ood_kdtree.py                    # demo-manifold KNN penalty (EXP_05 hook)
+│       └── simple/                              # single-process PPO post-training (replaces rlinf shell)
+│           ├── config.py        policy.py       # ResidualGaussianPolicy (frozen π₀.₅ + residual head)
+│           ├── rollout_buffer.py ppo.py         # GAE + clipped surrogate + value clip
+│           ├── reward_shaping.py                # OOD penalty + survival cost + dense lift
+│           ├── bc_anchor.py                     # demo BC anchor (off by default in step9)
+│           ├── _openpi_server.py                # shared serve_policy process lifecycle
+│           ├── train.py                         # train entry (jsonl + TB + ckpt)
+│           └── eval.py                          # offline eval entry (n_episodes × num_envs)
 └── third_party/
     ├── openpi/          (EverNorif fork, branch lerobot-v0.3.3) — train + serve
     ├── leisaac/         (LightwheelAI)                          — Isaac Lab tasks
