@@ -22,6 +22,7 @@ logs/
 .claude/
 .codegraph/
 .understand-anything/
+CLAUDE.md
 *.swp
 .DS_Store
 
