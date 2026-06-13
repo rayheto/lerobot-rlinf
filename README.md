@@ -60,10 +60,9 @@ What's **planned** (not wired yet):
 
 A successful RL rollout (3 oranges picked → placed → arm returns to rest):
 
-<video src="https://github.com/rayheto/lerobot-rlinf/raw/main/docs/attachments/success_example.mp4" controls width="640" muted></video>
+https://github.com/user-attachments/assets/ae87e4af-954c-4fa7-a57d-f9e50bc84fc4
 
-<sub>If the embedded player doesn't show up in your viewer, open
-[docs/attachments/success_example.mp4](docs/attachments/success_example.mp4) directly.</sub>
+<sub>Local copy: [docs/attachments/success_example.mp4](docs/attachments/success_example.mp4)</sub>
 
 `src/rl/simple/` is a single-process PPO on a frozen π₀.₅ + small Gaussian residual
 head. 200 PPO iters (~1.0 M env steps, single 4090, ~7 h). All numbers below:
