@@ -20,6 +20,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import datetime
 import math
 import re
 import sys
@@ -78,9 +79,13 @@ def main() -> None:
     p.add_argument("--decay-lr", type=float, default=2.5e-6)
     args = p.parse_args()
 
-    args.tb_logdir.mkdir(parents=True, exist_ok=True)
-    writer = SummaryWriter(log_dir=str(args.tb_logdir))
-    print(f"tb_tailer: {args.log_path} -> {args.tb_logdir}", flush=True)
+    # Each invocation gets its own timestamped subdir so TensorBoard shows a
+    # distinct, identifiable run instead of collapsing every restart into the
+    # same unnamed "." run under tb_logdir.
+    run_dir = args.tb_logdir / datetime.datetime.now().strftime("run_%Y%m%d_%H%M%S")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    writer = SummaryWriter(log_dir=str(run_dir))
+    print(f"tb_tailer: {args.log_path} -> {run_dir}", flush=True)
     print(
         f"  lr schedule: peak={args.peak_lr} warmup={args.warmup_steps} "
         f"decay_steps={args.decay_steps} decay_lr={args.decay_lr}",
