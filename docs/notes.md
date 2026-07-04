@@ -56,15 +56,58 @@ here so we don't pay the cost twice.
 
 ## Install fiddles
 
+`.venv-isaacsim` (uv-managed, `uv venv --python 3.11 .venv-isaacsim`) replaced the old
+`rlinf-isaacsim-env` conda env — conda is not used anywhere in this repo anymore. Isaac
+Sim 5.1 is plain pip-installable (`isaacsim[all,extscache]==5.1.0` from
+`pypi.nvidia.com`), no binary installer or conda required. See README's "One-time
+setup" for the full `uv pip install` sequence. Fiddles hit along the way:
+
+- **uv's default index strategy breaks the multi-index resolve.** `torch`
+  (download.pytorch.org) + `isaacsim` (pypi.nvidia.com) + PyPI all need to be
+  searched for compatible versions of shared deps like `idna`; uv's default only
+  looks at the *first* index that has any version of a package. Use
+  `--index-strategy unsafe-best-match`.
+- **`flatdict==4.0.1` (an `isaaclab` dep) fails to build**: `ModuleNotFoundError: No
+  module named 'pkg_resources'`. Recent `setuptools` (81+) dropped `pkg_resources`
+  entirely. Fix: `uv pip install "setuptools<81"` into the venv, then install
+  `isaaclab` with `--no-build-isolation` so the build sees that setuptools.
 - `pip install -e source/isaaclab*` (all 5 packages) bumps `psutil` to >=7 and
-  breaks `isaacsim-kernel==5.1.0` which pins `psutil==5.9.8`.
-  **Re-pin after**: `pip install "psutil==5.9.8"`. (ipython will complain but works.)
+  breaks `isaacsim-kernel==5.1.0` which pins `psutil==5.9.8`; also bumps `click` past
+  the `8.1.7` isaacsim-kernel wants.
+  **Re-pin after**: `uv pip install "psutil==5.9.8" "click==8.1.7"`. (ipython /
+  huggingface-hub / typer will complain but still work — same category as the
+  fastapi/starlette mismatch below.)
+- Installing `leisaac` with `--no-deps` (required — its `[isaaclab]` extra would
+  re-pull isaacsim/isaaclab and risk a numpy>=2 bump) also skips its *real* direct
+  deps. Install them explicitly: `deepdiff feetech-servo-sdk "pygame>=2.5.1,<2.7.0"
+  pyserial`.
+- **`eval_run.py` needs `msgpack`, `pydantic`, and `pyarrow`** — none of them come in
+  transitively from the isaaclab/leisaac installs above. Without them, every eval
+  shard dies instantly (client crashes on import right after connecting, server logs
+  look like generic WebSocket handshake failures — `EOFError: stream ends after 0
+  bytes` — which is misleading; the real error is the client-side
+  `ModuleNotFoundError`/`ImportError` for these packages, only visible in the
+  client's own stdout).
+- **The `kitchen_with_orange` scene + `so101_follower.usd` robot are not in the
+  `leisaac` submodule** (`third_party/leisaac/assets/{robots,scenes}/` ship with only
+  `.gitkeep` placeholders). Download from `LightwheelAI/leisaac_env` on HuggingFace:
+  ```python
+  from huggingface_hub import snapshot_download
+  snapshot_download(repo_id="LightwheelAI/leisaac_env",
+      allow_patterns=["assets/robots/so101_follower.usd",
+                       "assets/scenes/kitchen_with_orange/**"],
+      local_dir="third_party/leisaac")
+  ```
+  (Public repo, no token needed.) Symptom without this: `pxr.Tf.ErrorException:
+  ... Failed to open layer @.../scenes/kitchen_with_orange/scene.usd@`.
 - `fastapi 0.115` wants `starlette<0.46`, isaaclab pulls 0.49 — ignore, fastapi
   isn't used by the training/rollout path.
-- IsaacLab is editable-installed from `third_party/IsaacLab/` (gitignored).
-  Re-running `pip install -e source/*` after `git pull` is enough; no need to
-  rerun `isaaclab.sh -i`.
-- **Don't install `lerobot` (or `accelerate`) into `rlinf-isaacsim-env`.**
+- IsaacLab is editable-installed from `third_party/leisaac/dependencies/IsaacLab/`
+  (bundled in the `leisaac` submodule). Re-running the `uv pip install -e` loop over
+  `source/isaaclab*` after `git pull` is enough; no need for `isaaclab.sh --install`
+  (its conda-activation-hook and `apt-get` side effects never come into play since we
+  call `uv pip install -e` directly on each package dir).
+- **Don't install `lerobot` (or `accelerate`) into `.venv-isaacsim`.**
   Both transitively pull numpy>=2, which breaks Isaac Sim 5.1 hard:
   hundreds of `isaacsim.*` extensions fail to load with
   `AttributeError: module 'numpy' has no attribute '_no_nep50_warning'`.
@@ -72,7 +115,12 @@ here so we don't pay the cost twice.
   access from inside the Isaac env (e.g. for the replay sanity script),
   read the parquet shards directly via pyarrow from `HF_LEROBOT_HOME`;
   don't import `LeRobotDataset`. Recovery if already broken:
-  `pip install "numpy==1.26.0"` — Isaac extensions reload on next run.
+  `uv pip install "numpy==1.26.0"` — Isaac extensions reload on next run.
+- **Running multiple `eval.py` processes in parallel (`src/eval.py --watch`
+  per-checkpoint fan-out) needs distinct `--port` per shard** — and on a shared
+  machine, don't assume the default `8000`/`8001`/... range is free. Watch mode uses
+  `--base-port` and checks the shard ports before launch; override it if a range is
+  busy.
 
 ## Cosmetic warnings (safe to ignore)
 

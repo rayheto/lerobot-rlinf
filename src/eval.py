@@ -4,10 +4,10 @@ Two-process orchestrator (single venv won't work — numpy version split):
 
   1. openpi serve_policy.py runs in third_party/openpi/.venv (JAX, numpy>=2)
      and exposes the trained LoRA checkpoint over WebSocket.
-  2. src/eval_run.py runs in rlinf-isaacsim-env (Isaac Sim 5.1 pins
-     numpy==1.26), spawns the env headless, writes one mp4 per episode,
-     and queries the openpi server with the next chunk prefetched
-     concurrently while the current chunk plays.
+  2. src/eval_run.py runs in .venv-isaacsim (Isaac Sim 5.1 pins numpy==1.26),
+     spawns the env headless, writes one mp4 per episode, and queries the
+     openpi server with the next chunk prefetched concurrently while the
+     current chunk plays.
 
 See docs/notes.md "Install fiddles" for the numpy split rationale.
 
@@ -21,6 +21,8 @@ Example:
 from __future__ import annotations
 
 import argparse
+import json
+import math
 import os
 import shlex
 import signal
@@ -34,6 +36,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OPENPI_ROOT = REPO_ROOT / "third_party" / "openpi"
 OPENPI_PY = OPENPI_ROOT / ".venv" / "bin" / "python"
+ISAAC_PY = REPO_ROOT / ".venv-isaacsim" / "bin" / "python"
 LEISAAC_ROOT = REPO_ROOT / "third_party" / "leisaac"
 # We replaced leisaac's policy_inference.py with our own loop (headless +
 # video capture + async chunk prefetch). See src/eval_run.py.
@@ -56,16 +59,7 @@ DEFAULT_ACTION_HORIZON = 10
 # each chunked trajectory play 2x faster than what the model saw at train
 # time — causes jerky tracking. Match it.
 DEFAULT_STEP_HZ = 30
-
-
-def _default_isaac_python() -> Path:
-    """rlinf-isaacsim-env is the conda env with Isaac Sim 5.1 + leisaac."""
-    base = os.environ.get("CONDA_PREFIX_1") or os.environ.get("CONDA_PREFIX") or "/home/hlei/miniconda3"
-    # Walk up to the conda root if we're inside an env.
-    root = Path(base)
-    if root.name != "miniconda3" and (root.parent / "envs").is_dir():
-        root = root.parent.parent
-    return root / "envs" / "rlinf-isaacsim-env" / "bin" / "python"
+DEFAULT_BACKEND = "sft"
 
 
 def _pick_latest_step(exp_dir: Path) -> int:
@@ -73,6 +67,14 @@ def _pick_latest_step(exp_dir: Path) -> int:
     if not steps:
         sys.exit(f"no step subdirs under {exp_dir}")
     return max(steps)
+
+
+def _find_checkpoint_steps(exp_dir: Path) -> list[int]:
+    steps = []
+    for p in exp_dir.iterdir():
+        if p.is_dir() and p.name.isdigit() and (p / "_CHECKPOINT_METADATA").exists():
+            steps.append(int(p.name))
+    return sorted(steps)
 
 
 def _resolve_ckpt(args: argparse.Namespace) -> Path:
@@ -102,6 +104,17 @@ def _wait_for_port(host: str, port: int, timeout_s: float) -> None:
             except OSError:
                 time.sleep(1.0)
     sys.exit(f"policy server on {host}:{port} did not come up within {timeout_s}s")
+
+
+def _port_is_free(host: str, port: int) -> bool:
+    bind_host = "127.0.0.1" if host in {"localhost", "0.0.0.0"} else host
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind((bind_host, port))
+        except OSError:
+            return False
+    return True
 
 
 def _spawn_server(ckpt: Path, config_name: str, prompt: str, port: int) -> subprocess.Popen:
@@ -159,52 +172,314 @@ def _run_leisaac(args: argparse.Namespace, isaac_py: Path, port: int, dataset_di
     return subprocess.run(cmd, env=env).returncode
 
 
-def main() -> None:
-    p = argparse.ArgumentParser(description="SO-101 pick-orange eval (openpi server + leisaac client).")
-    p.add_argument("--config-name", default=DEFAULT_CONFIG)
-    p.add_argument("--exp-name", help="Experiment name under outputs/<config>/.")
-    p.add_argument("--checkpoint-base-dir", default=str(REPO_ROOT / "outputs"))
-    p.add_argument("--checkpoint-dir", default=None,
-                   help="Absolute path to a step ckpt dir; overrides --exp-name/--step.")
-    p.add_argument("--step", type=int, default=None,
-                   help="Checkpoint step to load. Default: latest under exp dir.")
-    p.add_argument("--task", default=DEFAULT_TASK)
-    p.add_argument("--prompt", default=DEFAULT_PROMPT)
-    p.add_argument("--action-horizon", type=int, default=DEFAULT_ACTION_HORIZON)
-    p.add_argument("--eval-rounds", type=int, default=20)
-    p.add_argument("--episode-length-s", type=float, default=60.0)
-    p.add_argument("--step-hz", type=int, default=DEFAULT_STEP_HZ)
-    p.add_argument("--seed", type=int, default=None)
-    p.add_argument("--host", default="localhost")
-    p.add_argument("--port", type=int, default=8000)
-    p.add_argument("--server-timeout-s", type=float, default=180.0,
-                   help="Max wait for openpi server to bind the port (JIT + weight load).")
-    p.add_argument("--isaac-python", default=None,
-                   help="Override path to rlinf-isaacsim-env python.")
-    p.add_argument("--dataset-dir", default=None,
-                   help="Root for the lerobot v2.1 output dataset (data/, videos/, meta/). "
-                        "Default: <ckpt>/dataset/.")
-    p.add_argument("--dataset-fps", type=int, default=30,
-                   help="Output dataset fps. Must divide the env sim_fps (60 Hz) evenly. "
-                        "Default 30 matches EverNorif/leisaac-pick-orange.")
-    # Prefetch is OFF by default: the action chunk is computed from an obs
-    # captured ~7 steps before the chunk is applied, so the policy plans from a
-    # state that's behind where the arm actually ends up — manifests as a
-    # visible jerk at every chunk boundary and dropped success rate. Enable
-    # only after implementing temporal ensembling / receding-horizon execution.
-    p.add_argument("--prefetch", action=argparse.BooleanOptionalAction, default=False,
-                   help="Async-prefetch the next action chunk during current chunk playback. "
-                        "Hides infer latency but degrades the policy due to stale obs.")
-    p.add_argument("--prefetch-latency-ms", type=float, default=120.0,
-                   help="Slack reserved for in-flight infer; fire next chunk this many ms before "
-                        "current chunk ends. Set above measured infer latency (~103 ms).")
-    args = p.parse_args()
+def _load_state(state_path: Path) -> dict:
+    if state_path.exists():
+        return json.loads(state_path.read_text())
+    return {}
 
+
+def _save_state(state_path: Path, state: dict) -> None:
+    state_path.write_text(json.dumps(state, indent=2))
+
+
+def _query_gpus() -> list[dict]:
+    cmd = [
+        "nvidia-smi",
+        "--query-gpu=index,name,memory.used,memory.total,utilization.gpu",
+        "--format=csv,noheader,nounits",
+    ]
+    try:
+        proc = subprocess.run(cmd, check=True, text=True, capture_output=True)
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        sys.exit(f"failed to query GPUs with nvidia-smi: {exc}")
+
+    gpus: list[dict] = []
+    for line in proc.stdout.splitlines():
+        if not line.strip():
+            continue
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) != 5:
+            sys.exit(f"unexpected nvidia-smi output line: {line}")
+        idx, name, mem_used, mem_total, util = parts
+        gpus.append({
+            "index": int(idx),
+            "name": name,
+            "memory_used_mib": int(mem_used),
+            "memory_total_mib": int(mem_total),
+            "utilization_gpu_pct": int(util),
+        })
+    return gpus
+
+
+def _is_idle_gpu(gpu: dict, max_mem_mib: int, max_util_pct: int) -> bool:
+    return (
+        gpu["memory_used_mib"] <= max_mem_mib
+        and gpu["utilization_gpu_pct"] <= max_util_pct
+    )
+
+
+def _select_gpus(args: argparse.Namespace) -> list[int]:
+    all_gpus = _query_gpus()
+    by_index = {g["index"]: g for g in all_gpus}
+    idle = [
+        g for g in all_gpus
+        if _is_idle_gpu(g, args.gpu_memory_used_max_mib, args.gpu_util_max_pct)
+    ]
+
+    if args.gpus == "auto":
+        selected = [g["index"] for g in idle]
+        if args.max_gpus > 0:
+            selected = selected[:args.max_gpus]
+    else:
+        try:
+            selected = [int(g.strip()) for g in args.gpus.split(",") if g.strip()]
+        except ValueError:
+            sys.exit(f"invalid --gpus value: {args.gpus}")
+        missing = [g for g in selected if g not in by_index]
+        if missing:
+            sys.exit(f"requested GPU(s) not found: {missing}")
+        busy = [
+            by_index[g] for g in selected
+            if not _is_idle_gpu(by_index[g], args.gpu_memory_used_max_mib, args.gpu_util_max_pct)
+        ]
+        if busy:
+            details = ", ".join(
+                f"{g['index']} mem={g['memory_used_mib']}MiB util={g['utilization_gpu_pct']}%"
+                for g in busy
+            )
+            sys.exit(
+                "requested GPU(s) are not idle under the configured thresholds: "
+                f"{details}"
+            )
+
+    if len(selected) < args.min_gpus:
+        snapshot = ", ".join(
+            f"{g['index']} mem={g['memory_used_mib']}MiB util={g['utilization_gpu_pct']}%"
+            for g in all_gpus
+        )
+        sys.exit(
+            f"only {len(selected)} idle GPU(s) found, need at least {args.min_gpus}. "
+            f"Snapshot: {snapshot}"
+        )
+    return selected
+
+
+def _check_shard_ports(host: str, base_port: int, n: int) -> None:
+    busy = [p for p in range(base_port, base_port + n) if not _port_is_free(host, p)]
+    if busy:
+        sys.exit(f"port(s) already in use: {busy}. Pick another --base-port.")
+
+
+def _kill_eval_proc(proc: subprocess.Popen, port: int) -> None:
+    if proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=15)
+        except (ProcessLookupError, subprocess.TimeoutExpired):
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    # If eval.py is killed before its own finally block runs, serve_policy.py
+    # can remain in a separate process group and keep the shard port bound.
+    subprocess.run(["pkill", "-9", "-f", f"serve_policy.py --port {port}"], check=False)
+
+
+def _run_shard(
+    args: argparse.Namespace,
+    ckpt_dir: Path,
+    gpu: int,
+    shard_idx: int,
+    step: int,
+) -> subprocess.Popen:
+    port = args.base_port + shard_idx
+    dataset_dir = ckpt_dir / "eval" / f"shard_{shard_idx}"
+    cmd = [
+        sys.executable, str(Path(__file__).resolve()),
+        "--backend", args.backend,
+        "--config-name", args.config_name,
+        "--checkpoint-dir", str(ckpt_dir),
+        "--task", args.task,
+        "--prompt", args.prompt,
+        "--action-horizon", str(args.action_horizon),
+        "--eval-rounds", str(args.rounds_per_shard),
+        "--episode-length-s", str(args.episode_length_s),
+        "--step-hz", str(args.step_hz),
+        "--host", args.host,
+        "--port", str(port),
+        "--server-timeout-s", str(args.server_timeout_s),
+        "--dataset-dir", str(dataset_dir),
+        "--dataset-fps", str(args.dataset_fps),
+        "--prefetch-latency-ms", str(args.prefetch_latency_ms),
+        "--seed", str(step * 100 + shard_idx),
+    ]
+    if args.isaac_python:
+        cmd += ["--isaac-python", args.isaac_python]
+    if args.prefetch:
+        cmd.append("--prefetch")
+    else:
+        cmd.append("--no-prefetch")
+
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = str(gpu)
+    env["PYTHONUNBUFFERED"] = "1"
+    print(
+        f"[step {step}] shard {shard_idx}: gpu={gpu} port={port} -> {dataset_dir}",
+        flush=True,
+    )
+    return subprocess.Popen(cmd, cwd=str(REPO_ROOT), env=env, start_new_session=True)
+
+
+def _aggregate(shard_dirs: list[Path], dataset_fps: int, fast_threshold_s: float) -> dict:
+    fast_threshold_frames = fast_threshold_s * dataset_fps
+    outcomes: list[bool] = []
+    lengths: list[int | None] = []
+
+    for d in shard_dirs:
+        results_path = d / "results.json"
+        if not results_path.exists():
+            print(f"eval: missing {results_path}, shard likely failed; excluded", flush=True)
+            continue
+        results = json.loads(results_path.read_text())
+
+        ep_lengths: dict[int, int] = {}
+        episodes_path = d / "meta" / "episodes.jsonl"
+        if episodes_path.exists():
+            for line in episodes_path.read_text().splitlines():
+                if not line.strip():
+                    continue
+                rec = json.loads(line)
+                ep_lengths[rec["episode_index"]] = rec["length"]
+
+        for i, success in enumerate(results.get("outcomes", [])):
+            outcomes.append(bool(success))
+            lengths.append(ep_lengths.get(i))
+
+    n = len(outcomes)
+    n_success = sum(outcomes)
+    success_rate = n_success / n if n else 0.0
+    success_std = math.sqrt(success_rate * (1 - success_rate) / n) if n else 0.0
+    n_fast = sum(
+        1 for success, length in zip(outcomes, lengths)
+        if success and length is not None and length <= fast_threshold_frames
+    )
+    fast_rate = n_fast / n if n else 0.0
+    return {
+        "n_episodes": n,
+        "n_success": n_success,
+        "success_rate": success_rate,
+        "success_std": success_std,
+        "n_fast": n_fast,
+        "fast_rate": fast_rate,
+    }
+
+
+def _run_checkpoint_watch_eval(
+    args: argparse.Namespace,
+    ckpt_dir: Path,
+    step: int,
+    gpus: list[int],
+) -> dict:
+    _check_shard_ports(args.host, args.base_port, len(gpus))
+    procs = [_run_shard(args, ckpt_dir, gpu, i, step) for i, gpu in enumerate(gpus)]
+    deadline = time.time() + args.shard_timeout_s
+    for i, proc in enumerate(procs):
+        remaining = max(0.0, deadline - time.time())
+        port = args.base_port + i
+        try:
+            proc.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            print(f"[step {step}] shard {i} timed out after {args.shard_timeout_s:.0f}s", flush=True)
+            _kill_eval_proc(proc, port)
+        else:
+            if proc.returncode != 0:
+                print(f"[step {step}] shard {i} exited with code {proc.returncode}", flush=True)
+
+    shard_dirs = [ckpt_dir / "eval" / f"shard_{i}" for i in range(len(gpus))]
+    summary = _aggregate(shard_dirs, args.dataset_fps, args.fast_threshold_s)
+    summary.update({
+        "backend": args.backend,
+        "config_name": args.config_name,
+        "exp_name": args.exp_name,
+        "checkpoint_dir": str(ckpt_dir),
+        "step": step,
+        "gpus": gpus,
+        "base_port": args.base_port,
+    })
+    return summary
+
+
+def run_watch(args: argparse.Namespace) -> None:
+    if args.backend != "sft":
+        sys.exit(f"--watch currently supports only --backend=sft, got {args.backend}")
+    if not args.exp_name:
+        sys.exit("--watch requires --exp-name")
+
+    exp_dir = Path(args.checkpoint_base_dir).resolve() / args.config_name / args.exp_name
+    if not exp_dir.is_dir():
+        sys.exit(f"experiment dir does not exist: {exp_dir}")
+
+    gpus = _select_gpus(args)
+    state_path = exp_dir / "eval_watch_state.json"
+    summary_path = exp_dir / "eval_summary.jsonl"
+    state = _load_state(state_path)
+    seen_steps: set[int] = {int(k) for k in state}
+
+    print(
+        f"eval: watching {exp_dir} backend={args.backend} gpus={gpus} "
+        f"poll={args.poll_interval_s}s already_evaluated={sorted(seen_steps) or 'none'}",
+        flush=True,
+    )
+
+    while True:
+        available = _find_checkpoint_steps(exp_dir)
+        for step in [s for s in available if s not in seen_steps]:
+            ckpt_dir = exp_dir / str(step)
+            print(
+                f"[step {step}] checkpoint detected, starting eval "
+                f"({len(gpus)} shards x {args.rounds_per_shard} rounds)",
+                flush=True,
+            )
+            t0 = time.time()
+            summary = _run_checkpoint_watch_eval(args, ckpt_dir, step, gpus)
+            summary["wall_time_s"] = time.time() - t0
+            (ckpt_dir / "eval").mkdir(parents=True, exist_ok=True)
+            (ckpt_dir / "eval" / "summary.json").write_text(json.dumps(summary, indent=2))
+            with summary_path.open("a") as f:
+                f.write(json.dumps(summary) + "\n")
+            print(
+                f"[step {step}] success_rate={summary['success_rate']:.3f}"
+                f"+/-{summary['success_std']:.3f} ({summary['n_success']}/{summary['n_episodes']})"
+                f"  fast_rate={summary['fast_rate']:.3f} ({summary['n_fast']}/{summary['n_episodes']})"
+                f"  wall={summary['wall_time_s']:.0f}s",
+                flush=True,
+            )
+            seen_steps.add(step)
+            state[str(step)] = summary
+            _save_state(state_path, state)
+
+        if args.until_step is not None:
+            if args.until_step in seen_steps:
+                print(f"eval: reached --until-step={args.until_step}, exiting", flush=True)
+                return
+            if any(s > args.until_step for s in available) and args.until_step not in available:
+                print(
+                    f"eval: --until-step={args.until_step} was evicted before evaluation; exiting",
+                    flush=True,
+                )
+                return
+
+        time.sleep(args.poll_interval_s)
+
+
+def run_once(args: argparse.Namespace) -> int:
+    if args.backend != "sft":
+        sys.exit(f"unsupported --backend={args.backend}; only sft is implemented")
     if not args.checkpoint_dir and not args.exp_name:
         sys.exit("must provide --exp-name or --checkpoint-dir")
 
     ckpt = _resolve_ckpt(args)
-    isaac_py = Path(args.isaac_python) if args.isaac_python else _default_isaac_python()
+    isaac_py = Path(args.isaac_python) if args.isaac_python else ISAAC_PY
     dataset_dir = Path(args.dataset_dir).resolve() if args.dataset_dir else (ckpt / "dataset")
     print(f"checkpoint: {ckpt}", flush=True)
     print(f"isaac python: {isaac_py}", flush=True)
@@ -226,7 +501,77 @@ def main() -> None:
                     os.killpg(server.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-    sys.exit(rc)
+    return rc
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description="SO-101 pick-orange eval (openpi server + leisaac client).")
+    p.add_argument("--backend", default=DEFAULT_BACKEND, choices=["sft"],
+                   help="Eval backend. Only 'sft' is implemented; this reserves the interface for RL eval.")
+    p.add_argument("--watch", action="store_true",
+                   help="Watch an experiment directory and evaluate each new checkpoint.")
+    p.add_argument("--config-name", default=DEFAULT_CONFIG)
+    p.add_argument("--exp-name", help="Experiment name under outputs/<config>/.")
+    p.add_argument("--checkpoint-base-dir", default=str(REPO_ROOT / "outputs"))
+    p.add_argument("--checkpoint-dir", default=None,
+                   help="Absolute path to a step ckpt dir; overrides --exp-name/--step.")
+    p.add_argument("--step", type=int, default=None,
+                   help="Checkpoint step to load. Default: latest under exp dir.")
+    p.add_argument("--task", default=DEFAULT_TASK)
+    p.add_argument("--prompt", default=DEFAULT_PROMPT)
+    p.add_argument("--action-horizon", type=int, default=DEFAULT_ACTION_HORIZON)
+    p.add_argument("--eval-rounds", type=int, default=20)
+    p.add_argument("--episode-length-s", type=float, default=60.0)
+    p.add_argument("--step-hz", type=int, default=DEFAULT_STEP_HZ)
+    p.add_argument("--seed", type=int, default=None)
+    p.add_argument("--host", default="localhost")
+    p.add_argument("--port", type=int, default=8000)
+    p.add_argument("--server-timeout-s", type=float, default=180.0,
+                   help="Max wait for openpi server to bind the port (JIT + weight load).")
+    p.add_argument("--isaac-python", default=None,
+                   help="Override path to .venv-isaacsim python.")
+    p.add_argument("--dataset-dir", default=None,
+                   help="Root for the lerobot v2.1 output dataset (data/, videos/, meta/). "
+                        "Default: <ckpt>/dataset/.")
+    p.add_argument("--dataset-fps", type=int, default=30,
+                   help="Output dataset fps. Must divide the env sim_fps (60 Hz) evenly. "
+                        "Default 30 matches EverNorif/leisaac-pick-orange.")
+    # Prefetch is OFF by default: the action chunk is computed from an obs
+    # captured ~7 steps before the chunk is applied, so the policy plans from a
+    # state that's behind where the arm actually ends up — manifests as a
+    # visible jerk at every chunk boundary and dropped success rate. Enable
+    # only after implementing temporal ensembling / receding-horizon execution.
+    p.add_argument("--prefetch", action=argparse.BooleanOptionalAction, default=False,
+                   help="Async-prefetch the next action chunk during current chunk playback. "
+                        "Hides infer latency but degrades the policy due to stale obs.")
+    p.add_argument("--prefetch-latency-ms", type=float, default=120.0,
+                   help="Slack reserved for in-flight infer; fire next chunk this many ms before "
+                        "current chunk ends. Set above measured infer latency (~103 ms).")
+    p.add_argument("--gpus", default="auto",
+                   help="Watch mode only: 'auto' or comma-separated GPU ids. Default: auto.")
+    p.add_argument("--gpu-memory-used-max-mib", type=int, default=1024,
+                   help="Watch mode idle-GPU threshold for memory.used.")
+    p.add_argument("--gpu-util-max-pct", type=int, default=10,
+                   help="Watch mode idle-GPU threshold for utilization.gpu.")
+    p.add_argument("--min-gpus", type=int, default=1,
+                   help="Watch mode requires at least this many idle GPUs.")
+    p.add_argument("--max-gpus", type=int, default=0,
+                   help="Watch mode auto-select cap. 0 means all idle GPUs.")
+    p.add_argument("--base-port", type=int, default=8100,
+                   help="Watch mode first policy-server port; shard i uses base-port+i.")
+    p.add_argument("--rounds-per-shard", type=int, default=15)
+    p.add_argument("--fast-threshold-s", type=float, default=30.0,
+                   help="Episodes that succeed within this many seconds count as FAST.")
+    p.add_argument("--poll-interval-s", type=float, default=15.0)
+    p.add_argument("--shard-timeout-s", type=float, default=1800.0)
+    p.add_argument("--until-step", type=int, default=None,
+                   help="Watch mode exits once this step has been evaluated or missed.")
+    args = p.parse_args()
+
+    if args.watch:
+        run_watch(args)
+        return
+    sys.exit(run_once(args))
 
 
 if __name__ == "__main__":

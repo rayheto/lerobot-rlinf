@@ -1,4 +1,4 @@
-"""Headless inference loop for SO-101 pick-orange — runs inside rlinf-isaacsim-env.
+"""Headless inference loop for SO-101 pick-orange — runs inside .venv-isaacsim.
 
 Replaces leisaac/scripts/evaluation/policy_inference.py with three upgrades:
 

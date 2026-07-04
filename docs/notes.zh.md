@@ -49,21 +49,60 @@
 
 ## 安装的小坑
 
-- `pip install -e source/isaaclab*`（5 个包）会把 `psutil` 升到 >=7，
-  但 `isaacsim-kernel==5.1.0` 死锁 `psutil==5.9.8`。
-  **装完要补一刀**：`pip install "psutil==5.9.8"`（ipython 会抱怨但能跑）。
+`.venv-isaacsim`（uv 管理，`uv venv --python 3.11 .venv-isaacsim`）取代了原来的
+`rlinf-isaacsim-env` conda 环境——现在整个repo都不用 conda 了。Isaac Sim 5.1 就是普通
+pip 包（`isaacsim[all,extscache]==5.1.0`，来自 `pypi.nvidia.com`），不需要二进制安装器
+也不需要 conda。完整安装命令见 README「一次性安装」。踩过的坑：
+
+- **uv 默认的 index 策略会把多 index 解析搞崩**。`torch`（download.pytorch.org）+
+  `isaacsim`（pypi.nvidia.com）+ PyPI 三边都要能查到 `idna` 这类公共依赖的兼容版本，
+  但 uv 默认只认第一个出现该包的 index。要加 `--index-strategy unsafe-best-match`。
+- **`flatdict==4.0.1`（isaaclab 的依赖）编译失败**：`ModuleNotFoundError: No module
+  named 'pkg_resources'`。新版 `setuptools`（81+）把 `pkg_resources` 整个砍掉了。
+  修法：`uv pip install "setuptools<81"` 装进 venv，然后装 `isaaclab` 时加
+  `--no-build-isolation` 让编译过程能看到这个 setuptools。
+- `pip install -e source/isaaclab*`（5 个包）会把 `psutil` 升到 >=7，`click` 也会
+  升过 isaacsim-kernel 要的 `8.1.7`，但 `isaacsim-kernel==5.1.0` 死锁 `psutil==5.9.8`。
+  **装完要补一刀**：`uv pip install "psutil==5.9.8" "click==8.1.7"`
+  （ipython / huggingface-hub / typer 会抱怨但能跑，跟下面 fastapi/starlette 是一类）。
+- `leisaac` 必须用 `--no-deps` 装（不然它的 `[isaaclab]` extra 会重新拉 isaacsim/isaaclab，
+  有把 numpy 顶到 >=2 的风险），但这样它自己真正需要的直接依赖也会被跳过，得手动补上：
+  `deepdiff feetech-servo-sdk "pygame>=2.5.1,<2.7.0" pyserial`。
+- **`eval_run.py` 需要 `msgpack`、`pydantic`、`pyarrow`**——上面装 isaaclab/leisaac
+  都不会把这三个带进来。缺了它们，每个 eval shard 会秒挂（client 连上就在 import 阶段崩了，
+  server 端日志看着像普通 WebSocket 握手失败——`EOFError: stream ends after 0 bytes`——
+  很唬人，真正的错误其实是 client 自己进程里的 `ModuleNotFoundError`/`ImportError`，
+  只有看 client 自己的 stdout 才能看到）。
+- **`kitchen_with_orange` 场景和 `so101_follower.usd` 机器人模型不在 `leisaac` 子模块里**
+  （`third_party/leisaac/assets/{robots,scenes}/` 下只有占位的 `.gitkeep`）。要去 HuggingFace
+  的 `LightwheelAI/leisaac_env` 单独下载：
+  ```python
+  from huggingface_hub import snapshot_download
+  snapshot_download(repo_id="LightwheelAI/leisaac_env",
+      allow_patterns=["assets/robots/so101_follower.usd",
+                       "assets/scenes/kitchen_with_orange/**"],
+      local_dir="third_party/leisaac")
+  ```
+  （公开仓库，不需要 token）。没下载的症状：`pxr.Tf.ErrorException: ... Failed to
+  open layer @.../scenes/kitchen_with_orange/scene.usd@`。
 - `fastapi 0.115` 要 `starlette<0.46`，isaaclab 拉的是 0.49——忽略，
   fastapi 不在训练/rollout 链路里。
-- IsaacLab 是 editable 装在 `third_party/IsaacLab/`（已 gitignore）。
-  `git pull` 之后重跑 `pip install -e source/*` 就行，不用再跑 `isaaclab.sh -i`。
-- **`rlinf-isaacsim-env` 里不要装 `lerobot`（或 `accelerate`）。**
+- IsaacLab 是 editable 装在 `third_party/leisaac/dependencies/IsaacLab/`（跟着
+  `leisaac` 子模块一起带的）。`git pull` 之后对 `source/isaaclab*` 重跑一遍
+  `uv pip install -e` 循环就行，不用跑 `isaaclab.sh --install`（它的 conda 激活钩子和
+  `apt-get` 副作用都不会碰到，因为我们是直接对每个包目录 `uv pip install -e`）。
+- **`.venv-isaacsim` 里不要装 `lerobot`（或 `accelerate`）。**
   这俩会拖 numpy>=2 进来，Isaac Sim 5.1 直接崩 —— 几百个
   `isaacsim.*` 扩展全报 `AttributeError: module 'numpy' has no
   attribute '_no_nep50_warning'` 加载失败。`isaacsim-kernel==5.1.0.0`
   锁的是 `numpy==1.26.0`。如果要在 Isaac env 里读数据集（比如
   replay sanity 脚本），直接拿 pyarrow 读 `HF_LEROBOT_HOME` 下的
   parquet 分片，不要 import `LeRobotDataset`。已经踩坑了的修法：
-  `pip install "numpy==1.26.0"`，下次跑 Isaac 扩展会重新 load 上。
+  `uv pip install "numpy==1.26.0"`，下次跑 Isaac 扩展会重新 load 上。
+- **并行跑多个 `eval.py`（`src/eval.py --watch` 给每个 checkpoint 做的多分片
+  fan-out）每个分片的 `--port` 必须不一样**——而且在多人共用的机器上，不要假设默认的
+  `8000`/`8001`/... 这段端口是空的。watch 模式用 `--base-port` 分配端口，并会在启动前
+  检查每个 shard 端口；端口段被占用时手动换一个。
 
 ## 可以安全忽略的警告
 

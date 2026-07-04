@@ -1,7 +1,7 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
-.venv/
+.venv*/
 .env
 
 # Isaac Sim generated USD (regenerate locally via scripts/import_so101_urdf.py)

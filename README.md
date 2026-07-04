@@ -147,7 +147,7 @@ pins `numpy >= 2`; **Isaac Sim 5.1** pins `numpy == 1.26`. So:
 
 - `third_party/openpi/.venv/` — built via `uv sync` inside the openpi submodule.
   Owns: JAX, optax, π₀.₅ weights, `serve_policy.py`, `train.py`, `compute_norm_stats.py`.
-- `rlinf-isaacsim-env` (conda) — has Isaac Sim 5.1 + Isaac Lab 2.x + the editable
+- `.venv-isaacsim/` (uv) — has Isaac Sim 5.1 + Isaac Lab 2.x + the editable
   `leisaac` install. Owns: `eval_run.py` runtime.
 
 `src/eval.py` is the only place these meet: it spawns `openpi/scripts/serve_policy.py`
@@ -182,10 +182,30 @@ git submodule update --init --recursive
 # openpi venv (uv-based)
 cd third_party/openpi && GIT_LFS_SKIP_SMUDGE=1 uv sync && cd ../..
 
-# leisaac editable install in the Isaac Sim conda env
-conda activate rlinf-isaacsim-env
-pip install -e ./third_party/leisaac/source/leisaac --no-deps
-pip install -e .
+# Isaac Sim / eval venv (uv-based)
+uv venv --python 3.11 .venv-isaacsim
+uv pip install --python .venv-isaacsim/bin/python \
+  --index-strategy unsafe-best-match \
+  --extra-index-url https://download.pytorch.org/whl/cu128 \
+  --extra-index-url https://pypi.nvidia.com \
+  "torch==2.7.0+cu128" "torchvision==0.22.0+cu128" \
+  "isaacsim[all,extscache]==5.1.0"
+uv pip install --python .venv-isaacsim/bin/python "setuptools<81"  # flatdict needs pkg_resources
+for pkg in isaaclab isaaclab_assets isaaclab_mimic isaaclab_rl isaaclab_tasks; do
+  uv pip install --python .venv-isaacsim/bin/python \
+    -e third_party/leisaac/dependencies/IsaacLab/source/$pkg
+done
+uv pip install --python .venv-isaacsim/bin/python \
+  -e third_party/leisaac/source/leisaac --no-deps
+uv pip install --python .venv-isaacsim/bin/python \
+  "click==8.1.7" deepdiff feetech-servo-sdk "pygame>=2.5.1,<2.7.0" pyserial \
+  msgpack pydantic pyarrow
+uv pip install --python .venv-isaacsim/bin/python -e .
+# Isaac Sim hard-pins these; the installs above bump them — re-pin last.
+uv pip install --python .venv-isaacsim/bin/python "numpy==1.26.0" "psutil==5.9.8"
+
+# Isaac Sim USD scene/robot assets aren't in the leisaac submodule — download separately
+# (see docs/notes.md for the full asset list and huggingface_hub snippet).
 ```
 
 ### SFT — LoRA π₀.₅ on pick-orange (60 demos)
@@ -230,6 +250,16 @@ Isaac Sim venv. Each episode writes:
 `--prefetch` is **off by default** — async chunk prefetch hides infer latency but the
 policy plans from a 7-step-stale obs and visibly jerks at chunk boundaries. Re-enable
 only after implementing receding-horizon execution / temporal ensembling.
+
+To evaluate checkpoints as training writes them, run watch mode:
+
+```bash
+python src/eval.py --watch --exp-name=so101_pick_orange_lora_v0
+```
+
+Watch mode auto-selects idle GPUs with `nvidia-smi`, runs one eval shard per GPU on
+separate ports, and writes `<exp_dir>/eval_summary.jsonl`. Override with `--gpus` or
+`--base-port` when sharing a machine.
 
 ### Dataset diagnostics
 

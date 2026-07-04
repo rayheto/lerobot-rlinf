@@ -143,7 +143,7 @@ lerobot-rlinf/
 
 - `third_party/openpi/.venv/` — 在 openpi 子模块内用 `uv sync` 构建。
   归它管：JAX、optax、π₀.₅ 权重、`serve_policy.py`、`train.py`、`compute_norm_stats.py`。
-- `rlinf-isaacsim-env`（conda）— 装着 Isaac Sim 5.1 + Isaac Lab 2.x + `leisaac` 的
+- `.venv-isaacsim/`（uv 管理）— 装着 Isaac Sim 5.1 + Isaac Lab 2.x + `leisaac` 的
   editable 安装。归它管：`eval_run.py` 的运行时。
 
 `src/eval.py` 是这两侧唯一的交点：它在 openpi venv 下拉起 `openpi/scripts/serve_policy.py`，
@@ -176,10 +176,30 @@ git submodule update --init --recursive
 # openpi venv（uv 管理）
 cd third_party/openpi && GIT_LFS_SKIP_SMUDGE=1 uv sync && cd ../..
 
-# 在 Isaac Sim conda env 内做 leisaac 的 editable 安装
-conda activate rlinf-isaacsim-env
-pip install -e ./third_party/leisaac/source/leisaac --no-deps
-pip install -e .
+# Isaac Sim / eval venv（uv 管理）
+uv venv --python 3.11 .venv-isaacsim
+uv pip install --python .venv-isaacsim/bin/python \
+  --index-strategy unsafe-best-match \
+  --extra-index-url https://download.pytorch.org/whl/cu128 \
+  --extra-index-url https://pypi.nvidia.com \
+  "torch==2.7.0+cu128" "torchvision==0.22.0+cu128" \
+  "isaacsim[all,extscache]==5.1.0"
+uv pip install --python .venv-isaacsim/bin/python "setuptools<81"  # flatdict 需要 pkg_resources
+for pkg in isaaclab isaaclab_assets isaaclab_mimic isaaclab_rl isaaclab_tasks; do
+  uv pip install --python .venv-isaacsim/bin/python \
+    -e third_party/leisaac/dependencies/IsaacLab/source/$pkg
+done
+uv pip install --python .venv-isaacsim/bin/python \
+  -e third_party/leisaac/source/leisaac --no-deps
+uv pip install --python .venv-isaacsim/bin/python \
+  "click==8.1.7" deepdiff feetech-servo-sdk "pygame>=2.5.1,<2.7.0" pyserial \
+  msgpack pydantic pyarrow
+uv pip install --python .venv-isaacsim/bin/python -e .
+# Isaac Sim 强制锁这两个版本，上面的安装会把它们升级——最后再压回去。
+uv pip install --python .venv-isaacsim/bin/python "numpy==1.26.0" "psutil==5.9.8"
+
+# Isaac Sim 的 USD 场景/机器人资产不在 leisaac 子模块里，需要单独下载
+#（完整清单和 huggingface_hub 下载片段见 docs/notes.md）。
 ```
 
 ### SFT —— pick-orange 上的 LoRA π₀.₅（60 条示教）
@@ -223,6 +243,16 @@ python src/eval.py --exp-name=so101_pick_orange_lora_v0 --eval-rounds=20
 `--prefetch` **默认关闭** —— 异步预取下一段 action chunk 能隐藏推理延迟，
 但策略会基于约 7 步前的观测做规划，每个 chunk 边界都会肉眼可见地抖一下。
 等实现了 receding-horizon 执行 / temporal ensembling 之后再打开。
+
+训练过程中要边产 checkpoint 边评测，用 watch 模式：
+
+```bash
+python src/eval.py --watch --exp-name=so101_pick_orange_lora_v0
+```
+
+watch 模式会用 `nvidia-smi` 自动挑空闲 GPU，每张 GPU 跑一个 eval 分片并使用独立端口，
+汇总写到 `<exp_dir>/eval_summary.jsonl`。多人共用机器时可用 `--gpus` 或 `--base-port`
+手动覆盖。
 
 ### 数据集诊断
 
