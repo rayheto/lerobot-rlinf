@@ -49,10 +49,10 @@ What's **live** today:
 - Five-module diagnostic framework that compares a candidate eval dataset against the
   reference training dataset
 
-What's **planned** (not wired yet):
-- RLinf-driven PPO/GRPO post-training loop. `third_party/RLinf` is checked in but not
-  invoked by anything in `src/` yet — superseded in practice by `src/rl/simple/`
-  (single-process PPO, see results below).
+What's **experimental**:
+- RLinf-driven residual PPO entrypoint at `src/rl/rlinf_residual/train.py`.
+  It keeps π₀.₅ frozen behind per-worker openpi servers and trains only a
+  small residual MLP. The proven baseline remains `src/rl/simple/`.
 
 ---
 
@@ -124,18 +124,23 @@ lerobot-rlinf/
 │       ├── envs/                                # Isaac Lab env wrapper + OOD KD-tree
 │       │   ├── isaaclab_pick_orange.py          # subprocess IPC + sparse 3-stage reward
 │       │   └── ood_kdtree.py                    # demo-manifold KNN penalty (EXP_05 hook)
-│       └── simple/                              # single-process PPO post-training (replaces rlinf shell)
-│           ├── config.py        policy.py       # ResidualGaussianPolicy (frozen π₀.₅ + residual head)
-│           ├── rollout_buffer.py ppo.py         # GAE + clipped surrogate + value clip
-│           ├── reward_shaping.py                # OOD penalty + survival cost + dense lift
-│           ├── bc_anchor.py                     # demo BC anchor (off by default in step9)
-│           ├── _openpi_server.py                # shared serve_policy process lifecycle
-│           ├── train.py                         # train entry (jsonl + TB + ckpt)
-│           └── eval.py                          # offline eval entry (n_episodes × num_envs)
+│       ├── simple/                              # single-process PPO post-training
+│       │   ├── config.py        policy.py       # ResidualGaussianPolicy (frozen π₀.₅ + residual head)
+│       │   ├── rollout_buffer.py ppo.py         # GAE + clipped surrogate + value clip
+│       │   ├── reward_shaping.py                # OOD penalty + survival cost + dense lift
+│       │   ├── bc_anchor.py                     # demo BC anchor (off by default in step9)
+│       │   ├── _openpi_server.py                # shared serve_policy process lifecycle
+│       │   ├── train.py                         # train entry (jsonl + TB + ckpt)
+│       │   └── eval.py                          # offline eval entry (n_episodes × num_envs)
+│       └── rlinf_residual/                      # RLinf residual PPO glue (experimental)
+│           ├── train.py                         # RLinf EmbodiedRunner entry
+│           ├── env.py                           # residual env: obs=(state, base), action=base+residual
+│           ├── model.py                         # so101_residual_mlp registration
+│           └── config/pick_orange_residual_ppo.yaml
 └── third_party/
     ├── openpi/          (EverNorif fork, branch lerobot-v0.3.3) — train + serve
     ├── leisaac/         (LightwheelAI)                          — Isaac Lab tasks
-    └── RLinf/           (woshinideba1425 fork)                  — reserved for Phase 3
+    └── RLinf/           (woshinideba1425 fork)                  — experimental Phase 3 entry wired in src/rl/rlinf_residual
 ```
 
 ---
@@ -302,7 +307,7 @@ end-to-end smoke test.
 | openpi      | EverNorif fork, `lerobot-v0.3.3` | LoRA π₀.₅ kernel; train.py + serve_policy.py |
 | leisaac     | LightwheelAI main                | LeIsaac-SO101-PickOrange-v0 task |
 | LeRobot     | v2.1 dataset format              | embedded in openpi's data pipeline |
-| RLinf       | woshinideba1425 fork             | reserved for Phase 3 — not invoked yet |
+| RLinf       | woshinideba1425 fork             | experimental residual PPO entry in `src/rl/rlinf_residual` |
 | PEFT        | bundled by openpi                | rank-16 LoRA on action-expert `q/k/v/o_proj` |
 | PyTorch     | bundled with Isaac Sim 5.1       | tb_tailer.py only |
 
@@ -333,6 +338,6 @@ lerobot's pyav reader is codec-agnostic).
 |-------|------|--------|
 | 1 | SO-101 URDF → Isaac Sim USD, env smoke tests             | done |
 | 2 | LoRA π₀.₅ SFT on pick-orange + leisaac eval + diagnostics | live (this repo) |
-| 3 | RLinf-driven PPO/GRPO post-training                      | planned — RLinf submodule is checked in but `src/` does not invoke it |
+| 3 | RLinf-driven PPO/GRPO post-training                      | experimental residual PPO glue wired in `src/rl/rlinf_residual` |
 
 Open items: [docs/todo.md](docs/todo.md). Setup gotchas catalogue: [docs/notes.md](docs/notes.md).
