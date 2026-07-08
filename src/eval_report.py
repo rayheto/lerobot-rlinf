@@ -20,12 +20,20 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--exp-name", required=True)
+    p.add_argument("--exp-name")
     p.add_argument("--config-name", default="pi05_lora_so101_pick_orange")
     p.add_argument("--checkpoint-base-dir", default=str(REPO_ROOT / "outputs"))
     p.add_argument("--out", default=None, help="Output PNG path. Default: <exp_dir>/eval_report.png")
     p.add_argument("--title", default=None,
                    help="Figure title. Default: title-cased --exp-name.")
+    p.add_argument(
+        "--summary",
+        action="append",
+        default=[],
+        metavar="LABEL=PATH",
+        help="Compare one or more eval summary JSON files. When provided, "
+        "--exp-name is not required.",
+    )
     args = p.parse_args()
 
     try:
@@ -33,18 +41,31 @@ def main() -> None:
     except ModuleNotFoundError as exc:
         raise SystemExit("matplotlib is required to render the eval report") from exc
 
-    exp_dir = Path(args.checkpoint_base_dir) / args.config_name / args.exp_name
-    summary_path = exp_dir / "eval_summary.jsonl"
-    if not summary_path.exists():
-        raise SystemExit(f"no eval_summary.jsonl at {summary_path} yet")
-
-    rows = [json.loads(line) for line in summary_path.read_text().splitlines() if line.strip()]
+    if args.summary:
+        rows = []
+        for item in args.summary:
+            if "=" not in item:
+                raise SystemExit(f"--summary must be LABEL=PATH, got: {item}")
+            label, raw_path = item.split("=", 1)
+            row = json.loads(Path(raw_path).read_text())
+            row["label"] = label
+            row.setdefault("step", label)
+            rows.append(row)
+    else:
+        if not args.exp_name:
+            raise SystemExit("--exp-name is required unless --summary is provided")
+        exp_dir = Path(args.checkpoint_base_dir) / args.config_name / args.exp_name
+        summary_path = exp_dir / "eval_summary.jsonl"
+        if not summary_path.exists():
+            raise SystemExit(f"no eval_summary.jsonl at {summary_path} yet")
+        rows = [json.loads(line) for line in summary_path.read_text().splitlines() if line.strip()]
     rows = [r for r in rows if r.get("n_episodes", 0) > 0]
     if not rows:
         raise SystemExit("eval_summary.jsonl has no completed checkpoints yet (all n_episodes=0)")
-    rows.sort(key=lambda r: r["step"])
+    if not args.summary:
+        rows.sort(key=lambda r: r["step"])
 
-    steps = [str(r["step"]) for r in rows]
+    steps = [str(r.get("label", r["step"])) for r in rows]
     success_pct = [100 * r["success_rate"] for r in rows]
     success_err = [100 * r["success_std"] for r in rows]
     fast_pct = [100 * r["fast_rate"] for r in rows]
@@ -69,11 +90,15 @@ def main() -> None:
             ax.text(bar.get_x() + bar.get_width() / 2, 2, f"n={ni}",
                     ha="center", va="bottom", fontsize=8, color="#555")
 
-    title = args.title if args.title else args.exp_name.replace("_", " ").title()
+    title = args.title if args.title else (
+        "Eval Comparison" if args.summary else args.exp_name.replace("_", " ").title()
+    )
     fig.suptitle(title, fontsize=12, fontweight="bold")
     fig.tight_layout()
 
-    out = Path(args.out) if args.out else exp_dir / "eval_report.png"
+    out = Path(args.out) if args.out else (
+        Path("eval_report.png") if args.summary else exp_dir / "eval_report.png"
+    )
     fig.savefig(out, dpi=150)
     print(f"wrote {out}")
 

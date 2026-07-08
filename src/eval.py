@@ -60,6 +60,13 @@ DEFAULT_ACTION_HORIZON = 10
 # time — causes jerky tracking. Match it.
 DEFAULT_STEP_HZ = 30
 DEFAULT_BACKEND = "sft"
+DEFAULT_BASE_CKPT = (
+    REPO_ROOT
+    / "outputs"
+    / DEFAULT_CONFIG
+    / "so101_pick_orange_lora_v0"
+    / "4999"
+)
 
 
 def _pick_latest_step(exp_dir: Path) -> int:
@@ -141,6 +148,43 @@ def _spawn_server(ckpt: Path, config_name: str, prompt: str, port: int) -> subpr
     env.setdefault("PYTHONUNBUFFERED", "1")
     # New session so we can kill the whole tree (server may spawn JAX workers).
     return subprocess.Popen(cmd, cwd=str(OPENPI_ROOT), env=env, start_new_session=True)
+
+
+def _spawn_residual_server(
+    args: argparse.Namespace,
+    rl_ckpt: Path,
+    base_port: int,
+    port: int,
+    isaac_py: Path,
+) -> subprocess.Popen:
+    cmd = [
+        str(isaac_py),
+        "-u",
+        "-m",
+        "src.rl.rlinf_residual.eval_server",
+        "--rl-checkpoint-dir",
+        str(rl_ckpt),
+        "--base-host",
+        args.host,
+        "--base-port",
+        str(base_port),
+        "--host",
+        "0.0.0.0",
+        "--port",
+        str(port),
+        "--obs-dim",
+        str(args.rlinf_obs_dim),
+        "--action-dim",
+        "6",
+        "--residual-clip",
+        str(args.residual_clip),
+        "--device",
+        args.rlinf_device,
+    ]
+    print(f"\n$ (cwd={REPO_ROOT}) {shlex.join(cmd)}", flush=True)
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    return subprocess.Popen(cmd, cwd=str(REPO_ROOT), env=env, start_new_session=True)
 
 
 def _run_leisaac(args: argparse.Namespace, isaac_py: Path, port: int, dataset_dir: Path) -> int:
@@ -473,8 +517,8 @@ def run_watch(args: argparse.Namespace) -> None:
 
 
 def run_once(args: argparse.Namespace) -> int:
-    if args.backend != "sft":
-        sys.exit(f"unsupported --backend={args.backend}; only sft is implemented")
+    if args.backend not in {"sft", "rlinf-residual"}:
+        sys.exit(f"unsupported --backend={args.backend}")
     if not args.checkpoint_dir and not args.exp_name:
         sys.exit("must provide --exp-name or --checkpoint-dir")
 
@@ -485,29 +529,67 @@ def run_once(args: argparse.Namespace) -> int:
     print(f"isaac python: {isaac_py}", flush=True)
     print(f"dataset dir: {dataset_dir}", flush=True)
 
-    server = _spawn_server(ckpt, args.config_name, args.prompt, args.port)
+    procs: list[tuple[subprocess.Popen, int | None]] = []
     rc = 1
     try:
+        if args.backend == "sft":
+            server = _spawn_server(ckpt, args.config_name, args.prompt, args.port)
+            procs.append((server, args.port))
+        else:
+            base_ckpt = Path(args.base_checkpoint_dir).resolve()
+            if not base_ckpt.is_dir():
+                sys.exit(f"base checkpoint dir does not exist: {base_ckpt}")
+            base_port = args.base_policy_port or (args.port + 1)
+            base_server = _spawn_server(
+                base_ckpt, args.base_config_name, args.prompt, base_port
+            )
+            procs.append((base_server, base_port))
+            _wait_for_port(args.host, base_port, args.server_timeout_s)
+            residual_server = _spawn_residual_server(
+                args, ckpt, base_port, args.port, isaac_py
+            )
+            procs.append((residual_server, args.port))
+
         _wait_for_port(args.host, args.port, args.server_timeout_s)
         print(f"policy server ready on {args.host}:{args.port}", flush=True)
         rc = _run_leisaac(args, isaac_py, args.port, dataset_dir)
     finally:
-        if server.poll() is None:
+        for proc, port in reversed(procs):
+            if proc.poll() is not None:
+                continue
             try:
-                os.killpg(server.pid, signal.SIGTERM)
-                server.wait(timeout=10)
+                os.killpg(proc.pid, signal.SIGTERM)
+                proc.wait(timeout=10)
             except (ProcessLookupError, subprocess.TimeoutExpired):
                 try:
-                    os.killpg(server.pid, signal.SIGKILL)
+                    os.killpg(proc.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+            if port is not None:
+                subprocess.run(
+                    ["pkill", "-9", "-f", f"serve_policy.py --port {port}"],
+                    check=False,
+                )
+    summary = _aggregate([dataset_dir], args.dataset_fps, args.fast_threshold_s)
+    summary.update(
+        {
+            "backend": args.backend,
+            "config_name": args.config_name,
+            "checkpoint_dir": str(ckpt),
+            "dataset_dir": str(dataset_dir),
+            "returncode": rc,
+        }
+    )
+    dataset_dir.mkdir(parents=True, exist_ok=True)
+    (dataset_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    print(f"eval summary: {dataset_dir / 'summary.json'}", flush=True)
     return rc
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description="SO-101 pick-orange eval (openpi server + leisaac client).")
-    p.add_argument("--backend", default=DEFAULT_BACKEND, choices=["sft"],
-                   help="Eval backend. Only 'sft' is implemented; this reserves the interface for RL eval.")
+    p.add_argument("--backend", default=DEFAULT_BACKEND, choices=["sft", "rlinf-residual"],
+                   help="Eval backend.")
     p.add_argument("--watch", action="store_true",
                    help="Watch an experiment directory and evaluate each new checkpoint.")
     p.add_argument("--config-name", default=DEFAULT_CONFIG)
@@ -515,6 +597,15 @@ def main() -> None:
     p.add_argument("--checkpoint-base-dir", default=str(REPO_ROOT / "outputs"))
     p.add_argument("--checkpoint-dir", default=None,
                    help="Absolute path to a step ckpt dir; overrides --exp-name/--step.")
+    p.add_argument("--base-config-name", default=DEFAULT_CONFIG,
+                   help="Base pi05 config for --backend=rlinf-residual.")
+    p.add_argument("--base-checkpoint-dir", default=str(DEFAULT_BASE_CKPT),
+                   help="Frozen pi05 checkpoint dir for --backend=rlinf-residual.")
+    p.add_argument("--base-policy-port", type=int, default=None,
+                   help="Base pi05 server port for --backend=rlinf-residual. Default: --port+1.")
+    p.add_argument("--rlinf-obs-dim", type=int, default=12)
+    p.add_argument("--rlinf-device", default="cpu")
+    p.add_argument("--residual-clip", type=float, default=0.0)
     p.add_argument("--step", type=int, default=None,
                    help="Checkpoint step to load. Default: latest under exp dir.")
     p.add_argument("--task", default=DEFAULT_TASK)

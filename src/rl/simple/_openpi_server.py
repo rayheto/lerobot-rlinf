@@ -27,7 +27,12 @@ def ensure_openpi_client_on_path() -> None:
 
 
 def spawn_openpi_server(
-    ckpt: pathlib.Path, config_name: str, prompt: str, port: int
+    ckpt: pathlib.Path,
+    config_name: str,
+    prompt: str,
+    port: int,
+    *,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.Popen:
     if not OPENPI_PY.exists():
         sys.exit(f"openpi venv missing at {OPENPI_PY}")
@@ -45,6 +50,8 @@ def spawn_openpi_server(
     env["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
     env.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.35")
     env.setdefault("PYTHONUNBUFFERED", "1")
+    if extra_env:
+        env.update(extra_env)
     return subprocess.Popen(
         cmd, cwd=str(OPENPI_ROOT), env=env, start_new_session=True
     )

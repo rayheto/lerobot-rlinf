@@ -1,0 +1,28 @@
+defaults:
+  - pick_orange_residual_ppo
+  - _self_
+
+cluster:
+  component_placement:
+    actor,env,rollout: null
+    actor,rollout: 0
+    env: 1
+
+runner:
+  max_epochs: 1
+  val_check_interval: -1
+  save_interval: -1
+
+env:
+  train:
+    total_num_envs: 2
+    max_episode_steps: 20
+    max_steps_per_rollout_epoch: 20
+  eval:
+    total_num_envs: 2
+    max_episode_steps: 20
+    max_steps_per_rollout_epoch: 20
+
+actor:
+  micro_batch_size: 10
+  global_batch_size: 40

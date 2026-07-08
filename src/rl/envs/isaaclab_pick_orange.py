@@ -180,6 +180,15 @@ def _arm_at_rest(joint_pos_rad: torch.Tensor) -> torch.Tensor:
 class IsaaclabPickOrangeEnv(IsaaclabBaseEnv):
     """Sparse 3-stage reward wrapper for SO-101 PickOrange."""
 
+    _REWARD_TERM_NAMES = (
+        "r_grasp",
+        "r_place",
+        "r_rest",
+        "r_timeout",
+        "r_drop",
+        "r_fail",
+    )
+
     def __init__(self, cfg, num_envs, seed_offset, total_num_processes, worker_info):
         rcfg = cfg.get("reward", {})
         self._grasp_bonus = float(rcfg.get("grasp_bonus", 10.0))
@@ -223,13 +232,46 @@ class IsaaclabPickOrangeEnv(IsaaclabBaseEnv):
 
         self._unit_lims = _lazy_so101_limits()
 
+    def _init_metrics(self):
+        super()._init_metrics()
+        self._last_reward_terms = {
+            name: torch.zeros(self.num_envs, device=self.device)
+            for name in self._REWARD_TERM_NAMES
+        }
+        self._episode_reward_terms = {
+            name: torch.zeros(self.num_envs, device=self.device)
+            for name in self._REWARD_TERM_NAMES
+        }
+
+    def _reset_metrics(self, env_idx=None):
+        super()._reset_metrics(env_idx)
+        if not hasattr(self, "_episode_reward_terms"):
+            return
+        if env_idx is None:
+            for name in self._REWARD_TERM_NAMES:
+                self._last_reward_terms[name].zero_()
+                self._episode_reward_terms[name].zero_()
+            return
+
+        for name in self._REWARD_TERM_NAMES:
+            self._last_reward_terms[name][env_idx] = 0.0
+            self._episode_reward_terms[name][env_idx] = 0.0
+
+    def _record_metrics(self, step_reward, terminations, infos):
+        infos = super()._record_metrics(step_reward, terminations, infos)
+        episode = infos["episode"]
+        for name in self._REWARD_TERM_NAMES:
+            episode[name] = self._last_reward_terms[name].clone()
+            episode[f"ep_{name}"] = self._episode_reward_terms[name].clone()
+        return infos
+
     # ------------------------------------------------------------------
     # Subprocess env construction
     # ------------------------------------------------------------------
 
     def _make_env_function(self):
         cfg_init = self.cfg.init_params
-        task_id = self.isaaclab_env_id
+        task_id = cfg_init.get("isaaclab_task_id", self.isaaclab_env_id)
 
         def make_env_isaaclab():
             import os
@@ -261,6 +303,10 @@ class IsaaclabPickOrangeEnv(IsaaclabBaseEnv):
                 isaac_env_cfg.scene.front.width = cfg_init.front_cam.width
                 isaac_env_cfg.scene.front.height = cfg_init.front_cam.height
 
+            # RL rollouts are collected through RLinf, not IsaacLab's recorder.
+            # Multiple EnvGroup processes otherwise try to create the same HDF5
+            # recorder file and fail on file locking during startup.
+            isaac_env_cfg.recorders = None
             isaac_env_cfg.observations.aux = _build_aux_obs_group()
 
             from leisaac.devices.action_process import init_action_cfg
@@ -458,6 +504,17 @@ class IsaaclabPickOrangeEnv(IsaaclabBaseEnv):
         # --- 7. timeout penalty (truncated, not yet finished/failed) ---
         timed_out = truncations & (~self._rest_emitted) & (~self._fail_emitted)
         r_timeout = self._timeout_penalty * timed_out.float()
+
+        self._last_reward_terms = {
+            "r_grasp": r_grasp.detach().clone(),
+            "r_place": r_place.detach().clone(),
+            "r_rest": r_rest.detach().clone(),
+            "r_timeout": r_timeout.detach().clone(),
+            "r_drop": r_drop.detach().clone(),
+            "r_fail": r_fail.detach().clone(),
+        }
+        for name, value in self._last_reward_terms.items():
+            self._episode_reward_terms[name] += value
 
         total = r_grasp + r_carry + r_place + r_drop + r_rest + r_fail + r_timeout
         # success_mask = task done (rest bonus emitted at least once)
