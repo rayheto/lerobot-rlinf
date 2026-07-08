@@ -60,6 +60,7 @@ DEFAULT_ACTION_HORIZON = 10
 # time — causes jerky tracking. Match it.
 DEFAULT_STEP_HZ = 30
 DEFAULT_BACKEND = "sft"
+REAL_BACKEND = REPO_ROOT / "src" / "real_backend.py"
 DEFAULT_BASE_CKPT = (
     REPO_ROOT
     / "outputs"
@@ -214,6 +215,36 @@ def _run_leisaac(args: argparse.Namespace, isaac_py: Path, port: int, dataset_di
     env["LEISAAC_ASSETS_ROOT"] = str(LEISAAC_ASSETS)
     print(f"\n$ LEISAAC_ASSETS_ROOT={LEISAAC_ASSETS} {shlex.join(cmd)}", flush=True)
     return subprocess.run(cmd, env=env).returncode
+
+
+def _run_real_backend(args: argparse.Namespace, port: int) -> int:
+    if not REAL_BACKEND.exists():
+        sys.exit(f"real backend script missing at {REAL_BACKEND}")
+    if not OPENPI_PY.exists():
+        sys.exit(f"openpi venv missing at {OPENPI_PY}")
+    if not args.real_config:
+        sys.exit("--backend=real requires --real-config")
+
+    cmd = [
+        str(OPENPI_PY), "-u", str(REAL_BACKEND),
+        "--config", args.real_config,
+        "--policy-host", args.host,
+        "--policy-port", str(port),
+        "--prompt", args.prompt,
+        "--action-horizon", str(args.action_horizon),
+        "--step-hz", str(args.step_hz),
+    ]
+    if args.real_max_steps is not None:
+        cmd += ["--max-steps", str(args.real_max_steps)]
+    if args.real_dry_run:
+        cmd.append("--dry-run")
+    if args.real_detect_cameras:
+        cmd.append("--detect-cameras")
+
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    print(f"\n$ (cwd={REPO_ROOT}) {shlex.join(cmd)}", flush=True)
+    return subprocess.run(cmd, cwd=str(REPO_ROOT), env=env).returncode
 
 
 def _load_state(state_path: Path) -> dict:
@@ -517,8 +548,10 @@ def run_watch(args: argparse.Namespace) -> None:
 
 
 def run_once(args: argparse.Namespace) -> int:
-    if args.backend not in {"sft", "rlinf-residual"}:
+    if args.backend not in {"sft", "rlinf-residual", "real"}:
         sys.exit(f"unsupported --backend={args.backend}")
+    if args.backend == "real" and args.real_detect_cameras:
+        return _run_real_backend(args, args.port)
     if not args.checkpoint_dir and not args.exp_name:
         sys.exit("must provide --exp-name or --checkpoint-dir")
 
@@ -532,7 +565,7 @@ def run_once(args: argparse.Namespace) -> int:
     procs: list[tuple[subprocess.Popen, int | None]] = []
     rc = 1
     try:
-        if args.backend == "sft":
+        if args.backend in {"sft", "real"}:
             server = _spawn_server(ckpt, args.config_name, args.prompt, args.port)
             procs.append((server, args.port))
         else:
@@ -552,7 +585,10 @@ def run_once(args: argparse.Namespace) -> int:
 
         _wait_for_port(args.host, args.port, args.server_timeout_s)
         print(f"policy server ready on {args.host}:{args.port}", flush=True)
-        rc = _run_leisaac(args, isaac_py, args.port, dataset_dir)
+        if args.backend == "real":
+            rc = _run_real_backend(args, args.port)
+        else:
+            rc = _run_leisaac(args, isaac_py, args.port, dataset_dir)
     finally:
         for proc, port in reversed(procs):
             if proc.poll() is not None:
@@ -570,7 +606,17 @@ def run_once(args: argparse.Namespace) -> int:
                     ["pkill", "-9", "-f", f"serve_policy.py --port {port}"],
                     check=False,
                 )
-    summary = _aggregate([dataset_dir], args.dataset_fps, args.fast_threshold_s)
+    if args.backend == "real":
+        summary = {
+            "n_episodes": 0,
+            "n_success": 0,
+            "success_rate": 0.0,
+            "success_std": 0.0,
+            "n_fast": 0,
+            "fast_rate": 0.0,
+        }
+    else:
+        summary = _aggregate([dataset_dir], args.dataset_fps, args.fast_threshold_s)
     summary.update(
         {
             "backend": args.backend,
@@ -588,7 +634,7 @@ def run_once(args: argparse.Namespace) -> int:
 
 def main() -> None:
     p = argparse.ArgumentParser(description="SO-101 pick-orange eval (openpi server + leisaac client).")
-    p.add_argument("--backend", default=DEFAULT_BACKEND, choices=["sft", "rlinf-residual"],
+    p.add_argument("--backend", default=DEFAULT_BACKEND, choices=["sft", "rlinf-residual", "real"],
                    help="Eval backend.")
     p.add_argument("--watch", action="store_true",
                    help="Watch an experiment directory and evaluate each new checkpoint.")
@@ -638,6 +684,14 @@ def main() -> None:
     p.add_argument("--prefetch-latency-ms", type=float, default=120.0,
                    help="Slack reserved for in-flight infer; fire next chunk this many ms before "
                         "current chunk ends. Set above measured infer latency (~103 ms).")
+    p.add_argument("--real-config", default=None,
+                   help="YAML/JSON config for --backend=real; declares SO-101 port and front/wrist cameras.")
+    p.add_argument("--real-max-steps", type=int, default=None,
+                   help="Real backend action-step limit. Default from config, or unlimited.")
+    p.add_argument("--real-dry-run", action="store_true",
+                   help="Run live camera/policy loop but print actions instead of sending them to the arm.")
+    p.add_argument("--real-detect-cameras", action="store_true",
+                   help="Print detected OpenCV cameras before running the real backend.")
     p.add_argument("--gpus", default="auto",
                    help="Watch mode only: 'auto' or comma-separated GPU ids. Default: auto.")
     p.add_argument("--gpu-memory-used-max-mib", type=int, default=1024,

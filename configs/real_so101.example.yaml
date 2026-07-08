@@ -1,0 +1,40 @@
+# Template for:
+#   python src/eval.py --backend real --checkpoint-dir <ckpt> --real-config configs/real_so101.example.yaml
+#
+# Camera ids can be discovered with:
+#   third_party/openpi/.venv/bin/python -m src.real_backend --config configs/real_so101.example.yaml --detect-cameras
+
+prompt: Grab orange and place into plate
+
+robot:
+  # Use `third_party/openpi/.venv/bin/lerobot-find-port` to discover this.
+  port: /dev/ttyACM0
+  id: so101_real
+  calibration_dir: null
+  disable_torque_on_disconnect: true
+  # Keep this small on hardware. LeRobot clips any single command farther than this from present position.
+  max_relative_target: 10
+  # This policy was trained in LeRobot motor-degree convention.
+  use_degrees: true
+
+cameras:
+  front:
+    # If both front and wrist omit index_or_path, auto assignment requires exactly two detected OpenCV cameras.
+    index_or_path: /dev/video0
+    width: 640
+    height: 480
+    fps: 30
+  wrist:
+    index_or_path: /dev/video2
+    width: 640
+    height: 480
+    fps: 30
+
+runtime:
+  step_hz: 30
+  action_horizon: 10
+  # 0 means run until Ctrl-C.
+  max_steps: 0
+  warmup_steps: 2
+  calibrate: true
+  dry_run: false
