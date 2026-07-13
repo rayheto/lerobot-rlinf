@@ -46,6 +46,76 @@ class RateLimiter:
             self.next_t = time.perf_counter()
 
 
+class PolicyInputRecorder:
+    def __init__(self, debug_dir: Path | None):
+        self.debug_dir = debug_dir
+        self.frames: list[Path] = []
+        if self.debug_dir is not None:
+            self.debug_dir.mkdir(parents=True, exist_ok=True)
+
+    def record(self, chunk_idx: int, policy_obs: dict[str, Any]) -> None:
+        if self.debug_dir is None:
+            return
+
+        import cv2
+
+        front = np.asarray(policy_obs["images/front"])
+        wrist = np.asarray(policy_obs["images/wrist"])
+        state = np.asarray(policy_obs["state"], dtype=np.float64)
+        prompt = str(policy_obs["prompt"])
+
+        front_bgr = cv2.cvtColor(front, cv2.COLOR_RGB2BGR)
+        wrist_bgr = cv2.cvtColor(wrist, cv2.COLOR_RGB2BGR)
+        cv2.putText(front_bgr, f"front chunk {chunk_idx}", (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+        cv2.putText(wrist_bgr, f"wrist chunk {chunk_idx}", (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+
+        front_path = self.debug_dir / f"chunk_{chunk_idx:04d}_front.jpg"
+        wrist_path = self.debug_dir / f"chunk_{chunk_idx:04d}_wrist.jpg"
+        sheet_path = self.debug_dir / f"chunk_{chunk_idx:04d}_sheet.jpg"
+        cv2.imwrite(str(front_path), front_bgr)
+        cv2.imwrite(str(wrist_path), wrist_bgr)
+        cv2.imwrite(str(sheet_path), cv2.hconcat([front_bgr, wrist_bgr]))
+        self.frames.append(sheet_path)
+
+        meta = {
+            "chunk_idx": chunk_idx,
+            "prompt": prompt,
+            "state": state.tolist(),
+            "front": str(front_path),
+            "wrist": str(wrist_path),
+            "sheet": str(sheet_path),
+        }
+        with (self.debug_dir / "policy_inputs.jsonl").open("a") as f:
+            f.write(json.dumps(meta) + "\n")
+
+    def close(self) -> None:
+        if self.debug_dir is None or not self.frames:
+            return
+
+        import cv2
+
+        first = cv2.imread(str(self.frames[0]))
+        if first is None:
+            return
+        h, w = first.shape[:2]
+        video_path = self.debug_dir / "policy_inputs.mp4"
+        writer = cv2.VideoWriter(
+            str(video_path),
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            3.0,
+            (w, h),
+        )
+        try:
+            for path in self.frames:
+                img = cv2.imread(str(path))
+                if img is None:
+                    continue
+                writer.write(img)
+        finally:
+            writer.release()
+        print(f"[real_backend] debug policy inputs: {self.debug_dir}", flush=True)
+
+
 def _load_config(path: Path) -> dict[str, Any]:
     text = path.read_text()
     if path.suffix.lower() in {".yaml", ".yml"}:
@@ -120,6 +190,9 @@ def _build_robot(cfg: dict[str, Any]):
     port = robot_cfg.get("port")
     if not port:
         raise SystemExit("real backend config requires robot.port, e.g. /dev/ttyACM0")
+    max_relative_target = robot_cfg.get("max_relative_target", 10)
+    if isinstance(max_relative_target, int):
+        max_relative_target = float(max_relative_target)
 
     cameras_cfg = _resolve_camera_specs(cfg)
     cameras = {}
@@ -139,7 +212,7 @@ def _build_robot(cfg: dict[str, Any]):
         if robot_cfg.get("calibration_dir")
         else None,
         disable_torque_on_disconnect=bool(robot_cfg.get("disable_torque_on_disconnect", True)),
-        max_relative_target=robot_cfg.get("max_relative_target", 10),
+        max_relative_target=max_relative_target,
         cameras=cameras,
         use_degrees=bool(robot_cfg.get("use_degrees", True)),
     )
@@ -201,6 +274,10 @@ def run_real_backend(args: argparse.Namespace) -> int:
     max_steps = int(max_steps_raw)
     warmup_steps = int(runtime_cfg.get("warmup_steps", 2))
     dry_run = bool(args.dry_run or runtime_cfg.get("dry_run", False))
+    debug_dir_raw = args.debug_dir or runtime_cfg.get("debug_dir")
+    recorder = PolicyInputRecorder(
+        Path(debug_dir_raw).expanduser().resolve() if debug_dir_raw else None
+    )
 
     stop = False
 
@@ -212,6 +289,7 @@ def run_real_backend(args: argparse.Namespace) -> int:
     signal.signal(signal.SIGTERM, _stop)
 
     sent_steps = 0
+    chunk_idx = 0
     try:
         robot.connect(calibrate=bool(runtime_cfg.get("calibrate", True)))
         for _ in range(warmup_steps):
@@ -220,6 +298,7 @@ def run_real_backend(args: argparse.Namespace) -> int:
         while not stop and (max_steps <= 0 or sent_steps < max_steps):
             obs = robot.get_observation()
             policy_obs = _build_policy_obs(obs, prompt)
+            recorder.record(chunk_idx, policy_obs)
             t0 = time.perf_counter()
             result = policy.infer(policy_obs)
             infer_ms = (time.perf_counter() - t0) * 1000.0
@@ -241,7 +320,9 @@ def run_real_backend(args: argparse.Namespace) -> int:
                 f"[real_backend] chunk infer={infer_ms:.1f}ms sent_steps={sent_steps}",
                 flush=True,
             )
+            chunk_idx += 1
     finally:
+        recorder.close()
         if robot.is_connected:
             robot.disconnect()
     return 0
@@ -257,6 +338,7 @@ def main() -> None:
     parser.add_argument("--step-hz", type=float, default=None)
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--debug-dir", default=None)
     parser.add_argument("--detect-cameras", action="store_true")
     args = parser.parse_args()
 

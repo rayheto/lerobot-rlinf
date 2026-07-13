@@ -9,6 +9,7 @@ assets/so_arm100/**/*.usd
 assets/so_arm100/**/*.usda
 
 # Training artifacts
+output/
 outputs/
 checkpoints/
 wandb/
@@ -17,6 +18,7 @@ logs/
 *.pt
 
 # Editor / agent state
+configs/real_so101.yaml
 .vscode/
 .idea/
 .claude/

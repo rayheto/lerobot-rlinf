@@ -125,7 +125,13 @@ def _port_is_free(host: str, port: int) -> bool:
     return True
 
 
-def _spawn_server(ckpt: Path, config_name: str, prompt: str, port: int) -> subprocess.Popen:
+def _spawn_server(
+    ckpt: Path,
+    config_name: str,
+    prompt: str,
+    port: int,
+    xla_mem_fraction: float,
+) -> subprocess.Popen:
     if not OPENPI_PY.exists():
         sys.exit(f"openpi venv missing at {OPENPI_PY}")
     # tyro union-of-dataclasses syntax: `policy:checkpoint` selects the
@@ -145,7 +151,7 @@ def _spawn_server(ckpt: Path, config_name: str, prompt: str, port: int) -> subpr
     # weights (~6 GB bf16). Disable preallocation so Vulkan/IsaacSim can
     # share the GPU on the same card.
     env["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-    env.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.35")
+    env.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", str(xla_mem_fraction))
     env.setdefault("PYTHONUNBUFFERED", "1")
     # New session so we can kill the whole tree (server may spawn JAX workers).
     return subprocess.Popen(cmd, cwd=str(OPENPI_ROOT), env=env, start_new_session=True)
@@ -217,7 +223,7 @@ def _run_leisaac(args: argparse.Namespace, isaac_py: Path, port: int, dataset_di
     return subprocess.run(cmd, env=env).returncode
 
 
-def _run_real_backend(args: argparse.Namespace, port: int) -> int:
+def _run_real_backend(args: argparse.Namespace, port: int, ckpt: Path | None = None) -> int:
     if not REAL_BACKEND.exists():
         sys.exit(f"real backend script missing at {REAL_BACKEND}")
     if not OPENPI_PY.exists():
@@ -236,6 +242,12 @@ def _run_real_backend(args: argparse.Namespace, port: int) -> int:
     ]
     if args.real_max_steps is not None:
         cmd += ["--max-steps", str(args.real_max_steps)]
+    debug_dir = args.real_debug_dir
+    if debug_dir is None and ckpt is not None:
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        debug_dir = str(ckpt / "real_debug" / stamp)
+    if debug_dir:
+        cmd += ["--debug-dir", debug_dir]
     if args.real_dry_run:
         cmd.append("--dry-run")
     if args.real_detect_cameras:
@@ -561,12 +573,23 @@ def run_once(args: argparse.Namespace) -> int:
     print(f"checkpoint: {ckpt}", flush=True)
     print(f"isaac python: {isaac_py}", flush=True)
     print(f"dataset dir: {dataset_dir}", flush=True)
+    xla_mem_fraction = (
+        args.xla_mem_fraction
+        if args.xla_mem_fraction is not None
+        else (0.85 if args.backend == "real" else 0.35)
+    )
 
     procs: list[tuple[subprocess.Popen, int | None]] = []
     rc = 1
     try:
         if args.backend in {"sft", "real"}:
-            server = _spawn_server(ckpt, args.config_name, args.prompt, args.port)
+            server = _spawn_server(
+                ckpt,
+                args.config_name,
+                args.prompt,
+                args.port,
+                xla_mem_fraction,
+            )
             procs.append((server, args.port))
         else:
             base_ckpt = Path(args.base_checkpoint_dir).resolve()
@@ -574,7 +597,11 @@ def run_once(args: argparse.Namespace) -> int:
                 sys.exit(f"base checkpoint dir does not exist: {base_ckpt}")
             base_port = args.base_policy_port or (args.port + 1)
             base_server = _spawn_server(
-                base_ckpt, args.base_config_name, args.prompt, base_port
+                base_ckpt,
+                args.base_config_name,
+                args.prompt,
+                base_port,
+                xla_mem_fraction,
             )
             procs.append((base_server, base_port))
             _wait_for_port(args.host, base_port, args.server_timeout_s)
@@ -586,7 +613,7 @@ def run_once(args: argparse.Namespace) -> int:
         _wait_for_port(args.host, args.port, args.server_timeout_s)
         print(f"policy server ready on {args.host}:{args.port}", flush=True)
         if args.backend == "real":
-            rc = _run_real_backend(args, args.port)
+            rc = _run_real_backend(args, args.port, ckpt)
         else:
             rc = _run_leisaac(args, isaac_py, args.port, dataset_dir)
     finally:
@@ -665,6 +692,9 @@ def main() -> None:
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--server-timeout-s", type=float, default=180.0,
                    help="Max wait for openpi server to bind the port (JIT + weight load).")
+    p.add_argument("--xla-mem-fraction", type=float, default=None,
+                   help="XLA_PYTHON_CLIENT_MEM_FRACTION for the openpi policy server. "
+                        "Default: 0.85 for --backend=real, otherwise 0.35.")
     p.add_argument("--isaac-python", default=None,
                    help="Override path to .venv-isaacsim python.")
     p.add_argument("--dataset-dir", default=None,
@@ -690,6 +720,9 @@ def main() -> None:
                    help="Real backend action-step limit. Default from config, or unlimited.")
     p.add_argument("--real-dry-run", action="store_true",
                    help="Run live camera/policy loop but print actions instead of sending them to the arm.")
+    p.add_argument("--real-debug-dir", default=None,
+                   help="Directory for real-backend policy input images/videos. "
+                        "Default: <checkpoint>/real_debug/<timestamp>/.")
     p.add_argument("--real-detect-cameras", action="store_true",
                    help="Print detected OpenCV cameras before running the real backend.")
     p.add_argument("--gpus", default="auto",
