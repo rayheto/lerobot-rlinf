@@ -8,8 +8,8 @@ prompt: Grab orange and place into plate
 
 robot:
   # Use `third_party/openpi/.venv/bin/lerobot-find-port` to discover this.
-  port: /dev/ttyACM0
-  id: so101_real
+  port: COM6
+  id: my_awesome_follower_arm
   calibration_dir: null
   disable_torque_on_disconnect: true
   # Keep this small on hardware. LeRobot clips any single command farther than this from present position.
@@ -20,12 +20,12 @@ robot:
 cameras:
   front:
     # If both front and wrist omit index_or_path, auto assignment requires exactly two detected OpenCV cameras.
-    index_or_path: /dev/video0
+    index_or_path: 1
     width: 640
     height: 480
     fps: 30
   wrist:
-    index_or_path: /dev/video2
+    index_or_path: 0
     width: 640
     height: 480
     fps: 30
@@ -36,5 +36,10 @@ runtime:
   # 0 means run until Ctrl-C.
   max_steps: 0
   warmup_steps: 2
-  calibrate: true
+  calibrate: false
   dry_run: false
+
+remote_policy:
+  request_timeout_ms: 30000
+  connect_timeout_ms: 30000
+  max_consecutive_failures: 2

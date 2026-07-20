@@ -30,13 +30,22 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OPENPI_ROOT = REPO_ROOT / "third_party" / "openpi"
-OPENPI_PY = OPENPI_ROOT / ".venv" / "bin" / "python"
-ISAAC_PY = REPO_ROOT / ".venv-isaacsim" / "bin" / "python"
+
+
+def _venv_python(venv: Path) -> Path:
+    candidates = [venv / "bin" / "python", venv / "Scripts" / "python.exe"]
+    return next((p for p in candidates if p.exists()), candidates[0])
+
+
+OPENPI_PY = _venv_python(OPENPI_ROOT / ".venv")
+ISAAC_PY = _venv_python(REPO_ROOT / ".venv-isaacsim")
 LEISAAC_ROOT = REPO_ROOT / "third_party" / "leisaac"
 # We replaced leisaac's policy_inference.py with our own loop (headless +
 # video capture + async chunk prefetch). See src/eval_run.py.
@@ -112,6 +121,25 @@ def _wait_for_port(host: str, port: int, timeout_s: float) -> None:
             except OSError:
                 time.sleep(1.0)
     sys.exit(f"policy server on {host}:{port} did not come up within {timeout_s}s")
+
+
+def _wait_for_policy_health(host: str, port: int, timeout_s: float) -> None:
+    health_host = "127.0.0.1" if host in {"0.0.0.0", ""} else host
+    url = f"http://{health_host}:{port}/healthz"
+    deadline = time.time() + timeout_s
+    last_error = None
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=2.0) as resp:
+                if 200 <= resp.status < 300:
+                    return
+        except (OSError, urllib.error.URLError) as exc:
+            last_error = exc
+        time.sleep(1.0)
+    sys.exit(
+        f"policy server health check failed at {url} within {timeout_s}s"
+        + (f": {last_error}" if last_error else "")
+    )
 
 
 def _port_is_free(host: str, port: int) -> bool:
@@ -223,7 +251,12 @@ def _run_leisaac(args: argparse.Namespace, isaac_py: Path, port: int, dataset_di
     return subprocess.run(cmd, env=env).returncode
 
 
-def _run_real_backend(args: argparse.Namespace, port: int, ckpt: Path | None = None) -> int:
+def _run_real_backend(
+    args: argparse.Namespace,
+    port: int,
+    ckpt: Path | None = None,
+    run_dir: Path | None = None,
+) -> int:
     if not REAL_BACKEND.exists():
         sys.exit(f"real backend script missing at {REAL_BACKEND}")
     if not OPENPI_PY.exists():
@@ -243,11 +276,32 @@ def _run_real_backend(args: argparse.Namespace, port: int, ckpt: Path | None = N
     if args.real_max_steps is not None:
         cmd += ["--max-steps", str(args.real_max_steps)]
     debug_dir = args.real_debug_dir
+    telemetry_dir = args.real_telemetry_dir
     if debug_dir is None and ckpt is not None:
         stamp = time.strftime("%Y%m%d_%H%M%S")
         debug_dir = str(ckpt / "real_debug" / stamp)
+    if debug_dir is None and run_dir is not None:
+        debug_dir = str(run_dir / "real_debug")
+    if telemetry_dir is None and debug_dir is not None:
+        telemetry_dir = debug_dir
     if debug_dir:
         cmd += ["--debug-dir", debug_dir]
+    if telemetry_dir:
+        cmd += ["--telemetry-dir", telemetry_dir]
+    if args.real_execution_mode:
+        cmd += ["--execution-mode", args.real_execution_mode]
+    if args.real_replan_steps is not None:
+        cmd += ["--replan-steps", str(args.real_replan_steps)]
+    if args.real_request_timeout_ms is not None:
+        cmd += ["--request-timeout-ms", str(args.real_request_timeout_ms)]
+    if args.real_max_action_age_ms is not None:
+        cmd += ["--max-action-age-ms", str(args.real_max_action_age_ms)]
+    if args.real_max_consecutive_failures is not None:
+        cmd += ["--max-consecutive-failures", str(args.real_max_consecutive_failures)]
+    if args.real_action_smoothing:
+        cmd += ["--action-smoothing", args.real_action_smoothing]
+    if args.real_ema_tau_s is not None:
+        cmd += ["--ema-tau-s", str(args.real_ema_tau_s)]
     if args.real_dry_run:
         cmd.append("--dry-run")
     if args.real_detect_cameras:
@@ -564,13 +618,19 @@ def run_once(args: argparse.Namespace) -> int:
         sys.exit(f"unsupported --backend={args.backend}")
     if args.backend == "real" and args.real_detect_cameras:
         return _run_real_backend(args, args.port)
-    if not args.checkpoint_dir and not args.exp_name:
+    connect_remote_real = args.backend == "real" and args.policy_server_mode == "connect"
+    if not connect_remote_real and not args.checkpoint_dir and not args.exp_name:
         sys.exit("must provide --exp-name or --checkpoint-dir")
 
-    ckpt = _resolve_ckpt(args)
+    ckpt = None if connect_remote_real and not (args.checkpoint_dir or args.exp_name) else _resolve_ckpt(args)
     isaac_py = Path(args.isaac_python) if args.isaac_python else ISAAC_PY
-    dataset_dir = Path(args.dataset_dir).resolve() if args.dataset_dir else (ckpt / "dataset")
-    print(f"checkpoint: {ckpt}", flush=True)
+    if args.dataset_dir:
+        dataset_dir = Path(args.dataset_dir).resolve()
+    elif ckpt is not None:
+        dataset_dir = ckpt / "dataset"
+    else:
+        dataset_dir = REPO_ROOT / "outputs" / "real_eval" / time.strftime("%Y%m%d_%H%M%S")
+    print(f"checkpoint: {ckpt or 'remote policy (connect mode)'}", flush=True)
     print(f"isaac python: {isaac_py}", flush=True)
     print(f"dataset dir: {dataset_dir}", flush=True)
     xla_mem_fraction = (
@@ -583,14 +643,17 @@ def run_once(args: argparse.Namespace) -> int:
     rc = 1
     try:
         if args.backend in {"sft", "real"}:
-            server = _spawn_server(
-                ckpt,
-                args.config_name,
-                args.prompt,
-                args.port,
-                xla_mem_fraction,
-            )
-            procs.append((server, args.port))
+            if args.policy_server_mode == "spawn":
+                if ckpt is None:
+                    sys.exit("--policy-server-mode=spawn requires --exp-name or --checkpoint-dir")
+                server = _spawn_server(
+                    ckpt,
+                    args.config_name,
+                    args.prompt,
+                    args.port,
+                    xla_mem_fraction,
+                )
+                procs.append((server, args.port))
         else:
             base_ckpt = Path(args.base_checkpoint_dir).resolve()
             if not base_ckpt.is_dir():
@@ -610,10 +673,13 @@ def run_once(args: argparse.Namespace) -> int:
             )
             procs.append((residual_server, args.port))
 
-        _wait_for_port(args.host, args.port, args.server_timeout_s)
+        if args.policy_server_mode == "connect":
+            _wait_for_policy_health(args.host, args.port, args.server_timeout_s)
+        else:
+            _wait_for_port(args.host, args.port, args.server_timeout_s)
         print(f"policy server ready on {args.host}:{args.port}", flush=True)
         if args.backend == "real":
-            rc = _run_real_backend(args, args.port, ckpt)
+            rc = _run_real_backend(args, args.port, ckpt, dataset_dir)
         else:
             rc = _run_leisaac(args, isaac_py, args.port, dataset_dir)
     finally:
@@ -648,7 +714,8 @@ def run_once(args: argparse.Namespace) -> int:
         {
             "backend": args.backend,
             "config_name": args.config_name,
-            "checkpoint_dir": str(ckpt),
+            "checkpoint_dir": str(ckpt) if ckpt is not None else None,
+            "policy_server_mode": args.policy_server_mode,
             "dataset_dir": str(dataset_dir),
             "returncode": rc,
         }
@@ -690,6 +757,8 @@ def main() -> None:
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--host", default="localhost")
     p.add_argument("--port", type=int, default=8000)
+    p.add_argument("--policy-server-mode", choices=["spawn", "connect"], default="spawn",
+                   help="spawn starts local openpi serve_policy.py; connect uses an already-running policy server.")
     p.add_argument("--server-timeout-s", type=float, default=180.0,
                    help="Max wait for openpi server to bind the port (JIT + weight load).")
     p.add_argument("--xla-mem-fraction", type=float, default=None,
@@ -723,6 +792,22 @@ def main() -> None:
     p.add_argument("--real-debug-dir", default=None,
                    help="Directory for real-backend policy input images/videos. "
                         "Default: <checkpoint>/real_debug/<timestamp>/.")
+    p.add_argument("--real-telemetry-dir", default=None,
+                   help="Directory for real-backend telemetry.jsonl. Default: real debug dir.")
+    p.add_argument("--real-execution-mode", choices=["sync", "async"], default=None,
+                   help="Real backend execution loop. Default from config, or sync.")
+    p.add_argument("--real-replan-steps", type=int, default=None,
+                   help="Async real backend: request a fresh chunk when queued actions fall under this count.")
+    p.add_argument("--real-request-timeout-ms", type=float, default=None,
+                   help="Real backend websocket inference timeout per request.")
+    p.add_argument("--real-max-action-age-ms", type=float, default=None,
+                   help="Async real backend: discard actions planned from observations older than this.")
+    p.add_argument("--real-max-consecutive-failures", type=int, default=None,
+                   help="Stop real backend after this many consecutive policy request failures.")
+    p.add_argument("--real-action-smoothing", choices=["none", "ema"], default=None,
+                   help="Post-process real actions before sending them to the robot.")
+    p.add_argument("--real-ema-tau-s", type=float, default=None,
+                   help="EMA smoothing time constant in seconds for --real-action-smoothing=ema.")
     p.add_argument("--real-detect-cameras", action="store_true",
                    help="Print detected OpenCV cameras before running the real backend.")
     p.add_argument("--gpus", default="auto",
