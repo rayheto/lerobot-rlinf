@@ -31,6 +31,23 @@ MOTOR_NAMES = (
     "gripper",
 )
 
+# RECAP integration (optional, off by default).  Imported lazily so the
+# module still works without the recap package installed.
+try:
+    from recap import (
+        DataRecorder,
+        HookServer,
+        LeRobotV3Exporter,
+        SO101_PRODUCT,
+        StateMachine,
+        TickRecord,
+    )
+    from recap.state_machine import ControlSource, FreezeTarget
+    RECAP_AVAILABLE = True
+except ImportError:
+    RECAP_AVAILABLE = False
+
+
 
 @dataclass
 class RateLimiter:
@@ -935,6 +952,170 @@ def _run_async_loop(
             pass
         worker.join(timeout=2)
     return sent_steps
+
+
+class RecapController:
+    """Optional RECAP controller wrapping state machine, data recorder, and hook server.
+
+    When recap is enabled via config, this object is passed into the control
+    loops.  All methods are no-ops when recap is disabled or unavailable.
+    """
+
+    def __init__(
+        self,
+        enabled: bool,
+        data_dir: Path | None,
+        hook_host: str,
+        hook_port: int,
+        prompt: str,
+    ) -> None:
+        self.enabled = enabled and RECAP_AVAILABLE
+        self.sm = StateMachine() if self.enabled else None
+        self.recorder = (
+            DataRecorder(data_dir) if self.enabled and data_dir else None
+        )
+        self.hook = (
+            HookServer(self.sm, hook_host, hook_port)
+            if self.enabled and self.sm
+            else None
+        )
+        self.prompt = prompt
+        self._session_id = ""
+        self._joint_names = list(SO101_PRODUCT.joint_names) if self.enabled else []
+
+    def start(self) -> None:
+        if not self.enabled:
+            return
+        import uuid
+        self._session_id = f"recap_{uuid.uuid4().hex[:8]}"
+        evs = self.sm.start_session(self._session_id, self.prompt)
+        self.recorder.set_meta("prompt", self.prompt)
+        self.recorder.set_meta("product", "so101")
+        self.recorder.set_meta("joint_names", self._joint_names)
+        for ev in evs:
+            self._record_event(ev)
+        if self.hook:
+            self.hook.start()
+            print(f"[recap] hook server: {self.hook.url}", flush=True)
+        print(f"[recap] session: {self._session_id}", flush=True)
+        if self.recorder and self.recorder.db_path:
+            print(f"[recap] data dir: {self.recorder.db_path.parent}", flush=True)
+
+    def stop(self) -> None:
+        if not self.enabled:
+            return
+        evs = self.sm.stop_session()
+        for ev in evs:
+            self._record_event(ev)
+        if self.hook:
+            self.hook.stop()
+        if self.recorder:
+            self.recorder.close()
+
+    def export_lerobot_v3(self, output_dir: Path) -> dict[str, Any] | None:
+        if not self.enabled or not self.recorder or not self.recorder.db_path:
+            return None
+        exporter = LeRobotV3Exporter(
+            db_path=self.recorder.db_path,
+            output_dir=output_dir,
+            fps=30,
+            joint_names=self._joint_names,
+            camera_keys=["front", "wrist"],
+        )
+        return exporter.export()
+
+    def should_request_inference(self) -> bool:
+        if not self.enabled or not self.sm:
+            return True
+        return self.sm.should_request_inference()
+
+    def should_execute_policy_action(self) -> bool:
+        if not self.enabled or not self.sm:
+            return True
+        return self.sm.should_execute_policy_action()
+
+    def advance_tick(self) -> int:
+        if not self.enabled or not self.sm:
+            return 0
+        return self.sm.advance_tick()
+
+    def record_tick(
+        self,
+        tick_id: int,
+        state: np.ndarray,
+        raw_action: np.ndarray | None,
+        executed_action: np.ndarray | None,
+        front_frame: np.ndarray | None = None,
+        wrist_frame: np.ndarray | None = None,
+        chunk_idx: int | None = None,
+        slot_idx: int | None = None,
+        request_id: int | None = None,
+    ) -> None:
+        if not self.enabled or not self.recorder:
+            return
+        iv = self.sm.current_intervention
+        rec = TickRecord(
+            tick_id=tick_id,
+            session_id=self._session_id,
+            episode_id=self.sm.episode_id,
+            mono_time=time.perf_counter(),
+            wall_time=time.time(),
+            joint_state=state,
+            raw_action=raw_action,
+            executed_action=executed_action,
+            action_source=self.sm.control_source.value if self.sm else "policy",
+            chunk_idx=chunk_idx,
+            slot_idx=slot_idx,
+            request_id=request_id,
+            front_frame=front_frame,
+            wrist_frame=wrist_frame,
+            intervention_id=iv.intervention_id if iv else None,
+            is_frozen_front=self.sm.is_frozen(FreezeTarget.FRONT) if self.sm else False,
+            is_frozen_wrist=self.sm.is_frozen(FreezeTarget.WRIST) if self.sm else False,
+            inference_paused=self.sm.inference_paused if self.sm else False,
+        )
+        self.recorder.record_tick(rec)
+        # Push to hook server
+        if self.hook:
+            joints = {}
+            if state is not None:
+                for name, val in zip(self._joint_names, state):
+                    joints[name] = float(val)
+            self.hook.push_joints(joints)
+            if front_frame is not None:
+                try:
+                    import cv2
+                    ok, buf = cv2.imencode(".jpg", front_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    if ok:
+                        self.hook.push_front_frame(buf.tobytes())
+                except Exception:
+                    pass
+            if wrist_frame is not None:
+                try:
+                    import cv2
+                    ok, buf = cv2.imencode(".jpg", wrist_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    if ok:
+                        self.hook.push_wrist_frame(buf.tobytes())
+                except Exception:
+                    pass
+
+    def drain_events(self) -> None:
+        if not self.enabled or not self.sm:
+            return
+        for ev in self.sm.drain_events():
+            self._record_event(ev)
+
+    def _record_event(self, ev) -> None:
+        if not self.recorder:
+            return
+        self.recorder.record_event(
+            event=ev.event,
+            tick=ev.tick,
+            mono_time=ev.mono_time,
+            wall_time=ev.wall_time,
+            session_id=self._session_id,
+            payload=ev.payload,
+        )
 
 
 def _runtime_value(
