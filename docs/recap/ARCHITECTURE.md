@@ -13,15 +13,24 @@
   arbitration, no human-correction, no raw wire-response recording, no per-tick
   state capture, no LeRobot v3 real-robot export, no direct-Hook server.
 
-### Rebot-Arm (branch: main, HEAD: bd3d34f)
-- `server.js`: Node.js static file server + hardcoded B601-DM `/api/config`.
-- `rebot-sim.js` (58 KB): Three.js + URDFLoader, joint sliders, TCP drag,
-  teach record/replay, forward-sim command dispatch.
+### Rebot-Arm (branch: main, HEAD includes `4d19f06`)
+- `server.js`: Node.js static file server, product registry endpoints, B601-DM
+  model routes, and SO-101 lazy model cache.
+- `/api/config?product=...`: product definition lookup for B601-DM and SO-101.
+- `/api/so101/urdf`: ensures the real SO-101 model cache exists, then serves
+  `so101_new_calib.urdf`.
+- `/api/so101/assets/...`: serves cached SO-101 STL mesh assets.
+- `rebot-sim.js`: Three.js + URDFLoader, product selector, product-specific
+  joint sliders, model reload, TCP drag, teach record/replay, forward-sim
+  command dispatch.
+- `direct-hook-client.js` / `direct-hook-ui.js`: Direct Hook client and RECAP
+  controls for pause/resume, camera freeze, intervention, and session status.
 - `rebot-ros-client.js` / `rebot-ros-ui.js`: rosbridge WebSocket client.
 - CSS: dark workbench, teal `#33d6b0`, amber `#f2a541`, red `#ef5a4d`,
   360 px right panel, 7-8 px radius.
-- **Gaps**: no product registry, no SO-101 model, no direct-Hook link,
-  no pause/freeze/intervention UI, no camera dock, no session query.
+- Runtime cache: `reBotArm_simulator/cache/so101-model/` stores downloaded
+  SO-101 URDF/STL assets from `TheRobotStudio/SO-ARM100`; it is ignored by Git.
+- **Remaining gaps**: no Direct Hook session query/history browser in the UI.
 
 ## 2. Cross-Repo Architecture
 
@@ -54,3 +63,6 @@ Rebot-Arm is the product model, visualization, human operation, and session quer
   eviction to never block the 30 Hz control loop.
 - **Conservative defaults**: new features OFF by default; existing real_backend
   and B601 page work unchanged when features are disabled.
+- **Lazy robot assets**: SO-101 real visualization assets are runtime data. The
+  browser blocks on the existing Loading screen while the local Node server
+  downloads missing URDF/STL files, then later page loads use the local cache.
