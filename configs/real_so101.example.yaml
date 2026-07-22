@@ -34,8 +34,11 @@ runtime:
   step_hz: 30
   action_horizon: 10
   # 0 means run until Ctrl-C.
-  max_steps: 0
+  max_steps: 10
   warmup_steps: 2
+  # Sends live observations to the policy server before control starts, but never executes returned actions.
+  # This absorbs the first slow JAX inference after a server restart.
+  policy_warmup_steps: 1
   calibrate: false
   dry_run: false
 

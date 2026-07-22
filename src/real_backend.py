@@ -540,6 +540,48 @@ def _make_policy(args: argparse.Namespace, remote_cfg: dict[str, Any]) -> TimedW
     )
 
 
+def _warmup_policy(
+    robot: Any,
+    policy: TimedWebsocketPolicy,
+    prompt: str,
+    count: int,
+    recorder: PolicyInputRecorder,
+    telemetry: TelemetryRecorder,
+) -> None:
+    if count <= 0:
+        return
+    print(f"[real_backend] policy warmup: {count} request(s)", flush=True)
+    for warmup_idx in range(count):
+        obs_wall = time.time()
+        obs_mono = time.perf_counter()
+        obs = robot.get_observation()
+        policy_obs = _build_policy_obs(obs, prompt)
+        recorder.record(-(warmup_idx + 1), policy_obs)
+        telemetry.record(
+            "policy_warmup_request",
+            warmup_idx=warmup_idx,
+            observation_wall=obs_wall,
+        )
+        t0 = time.perf_counter()
+        result = policy.infer(policy_obs)
+        response_mono = time.perf_counter()
+        chunk = _extract_action_chunk(result)
+        telemetry.record(
+            "policy_warmup_response",
+            warmup_idx=warmup_idx,
+            ok=True,
+            client_rtt_ms=(response_mono - t0) * 1000.0,
+            server_timing=_policy_server_timing(result),
+            action_age_ms=(response_mono - obs_mono) * 1000.0,
+            chunk_len=int(chunk.shape[0]),
+        )
+        print(
+            f"[real_backend] policy warmup {warmup_idx + 1}/{count}: "
+            f"{(response_mono - t0) * 1000.0:.1f}ms",
+            flush=True,
+        )
+
+
 def _inference_worker(
     policy: TimedWebsocketPolicy,
     request_queue: queue.Queue[InferenceRequest | None],
@@ -947,6 +989,7 @@ def run_real_backend(args: argparse.Namespace) -> int:
 
     robot = _build_robot(cfg)
     warmup_steps = int(runtime_cfg.get("warmup_steps", 2))
+    policy_warmup_steps = int(runtime_cfg.get("policy_warmup_steps", 1))
     debug_dir_raw = args.debug_dir or runtime_cfg.get("debug_dir")
     telemetry_dir_raw = args.telemetry_dir or runtime_cfg.get("telemetry_dir") or debug_dir_raw
     recorder = PolicyInputRecorder(
@@ -971,6 +1014,8 @@ def run_real_backend(args: argparse.Namespace) -> int:
         robot.connect(calibrate=bool(runtime_cfg.get("calibrate", True)))
         for _ in range(warmup_steps):
             robot.get_observation()
+
+        _warmup_policy(robot, policy, prompt, policy_warmup_steps, recorder, telemetry)
 
         telemetry.record("run_start", runtime=runtime, prompt=prompt)
         if runtime["execution_mode"] == "async":
