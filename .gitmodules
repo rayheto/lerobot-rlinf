@@ -8,3 +8,6 @@
 	path = third_party/openpi
 	url = https://github.com/EverNorif/openpi.git
 	branch = lerobot-v0.3.3
+[submodule "third_party/Rebot-Arm"]
+	path = third_party/Rebot-Arm
+	url = https://github.com/rayheto/Rebot-Arm.git
